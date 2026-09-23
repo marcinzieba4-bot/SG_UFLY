@@ -1,0 +1,5 @@
+# raw market data (Yahoo / VolVue vendor data) - re-downloaded by run_backtest.py
+data/
+__pycache__/
+*.pyc
+*.log

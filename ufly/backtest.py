@@ -59,6 +59,10 @@ class Config:
     svb_down: float = -7.0         # ... sell-offs
     wing_pre2022: float = 1.0      # stress: call-wing vol multiplier before 2022-05 (pre daily expiries / 0DTE boom)
     wing_vol_slope: float = 0.0    # stress: wing multiplier falls by this x (ATM - 12%) when vol is high (floor 0.75)
+    wing_mult: float = 0.82        # call-wing vol multiplier: real SPXW prices Jun-2023..Sep-2026 (validate_history.py)
+    wing_vol_beta: float = 0.0     # wing multiplier x exp(beta x (ATM - 12%)): cheaper wing in high vol
+    wing_file: str | None = None   # CSV (date, wing_mult): day-by-day wing level from real prices, replaces wing_mult
+    roll_min_wing: float = 0.0     # only roll on days whose wing level (wing_file) is at least this rich
     stress: tuple = (-0.10, -0.05, 0.03, 0.05, 0.08, 0.12)   # instantaneous gap shocks evaluated at each close
     mode: str = "strip"            # strip | replica
     replica_dte: int = 1
@@ -129,6 +133,15 @@ def atm_vols(mkt: pd.DataFrame, cfg: Config, clock: VarianceClock):
     return open_, close, rho, eff10
 
 
+def short_end_factor(T, rho_d: float, eff10_d: float):
+    """Vol multiplier taking the 10d ATM level to tenor T (business years): the first
+    day carries rho^2 of the average variance (rho = VIX1D/VIX9D), the remaining days
+    are scaled so the 10-day window's total variance is unchanged."""
+    lam = (eff10_d - rho_d ** 2) / max(eff10_d - 1, 1e-6)
+    x = np.maximum(np.atleast_1d(T) * 252, 1e-6)
+    return np.sqrt((rho_d ** 2 * np.minimum(x, 1) + lam * np.maximum(x - 1, 0)) / x)
+
+
 def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, marks=None) -> Result:
     mkt = daily_mkt.loc[cfg.start:cfg.end] if cfg.end else daily_mkt.loc[cfg.start:]
     dates = mkt.index
@@ -140,9 +153,14 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
     clock = VarianceClock(dates.values, cfg.clock)
     smile = Smile(cfg.smile)
     sig_open, sig_close, rho, eff10 = atm_vols(mkt, cfg, clock)
-    lam = (eff10 - rho ** 2) / np.maximum(eff10 - 1, 1e-6)   # keeps the 10d average variance unchanged
     replica = cfg.mode == "replica"
-    wm = np.where(dates < "2022-05-11", cfg.wing_pre2022, 1.0) * \
+    base_w = np.full(N, cfg.wing_mult)
+    if cfg.wing_file:
+        ws = pd.read_csv(cfg.wing_file, index_col=0, parse_dates=True).iloc[:, 0]
+        ws = ws[~ws.index.duplicated()].reindex(dates).ffill(limit=10)
+        base_w = ws.fillna(cfg.wing_mult).values
+    wm = base_w * np.exp(cfg.wing_vol_beta * (sig_close - 0.12)) * \
+        np.where(dates < "2022-05-11", cfg.wing_pre2022, 1.0) * \
         np.clip(1.0 - cfg.wing_vol_slope * np.maximum(sig_close - 0.12, 0.0), 0.75, 1.0)
 
     def atm_for(sig, d, T):
@@ -150,9 +168,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
         T = np.atleast_1d(T)
         if not cfg.short_end:
             return np.full_like(T, sig * cfg.atm_mult, dtype=float)
-        x = np.maximum(T * 252, 1e-6)
-        k2 = (rho[d] ** 2 * np.minimum(x, 1) + lam[d] * np.maximum(x - 1, 0)) / x
-        return sig * cfg.atm_mult * np.sqrt(k2)
+        return sig * cfg.atm_mult * short_end_factor(T, rho[d], eff10[d])
 
     if cfg.roll == "daily":
         roll_day = np.ones(N, bool)
@@ -162,6 +178,8 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
     else:
         raise ValueError(cfg.roll)
 
+    if cfg.roll_min_wing > 0:
+        roll_day = roll_day & (base_w >= cfg.roll_min_wing)
     listed = listed_expiries(dates) if cfg.listed_only else np.ones(N, bool)
     deltas = np.asarray(cfg.deltas, float)
     dw = np.ones(len(deltas)) if cfg.delta_weights is None else np.asarray(cfg.delta_weights, float)
@@ -251,7 +269,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
                             w = w * sum(cfg.weights) / wsum
                         T = float(clock.T(d, 1.0, e))
                         a = float(atm_for(sig, d, T)[0])
-                        K = smile.strike_for_delta(deltas, S, a, T)
+                        K = smile.strike_for_delta(deltas, S, a, T, wm[d])
                         K = np.maximum(np.round(K / cfg.strike_step) * cfg.strike_step,
                                        np.ceil(S / cfg.strike_step) * cfg.strike_step)
                         iv = smile.vol(K, S, a, T, wm[d])

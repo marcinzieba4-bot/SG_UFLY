@@ -80,15 +80,15 @@ class Smile:
         ramp = np.clip(z / 1.2816, 0.0, 1.0)
         return sig_atm * self.f(z) * (1.0 + (wing_mult - 1.0) * ramp)
 
-    def strike_for_delta(self, delta, F, sig_atm, T, iters: int = 60):
-        """Call strike whose BS delta (at its own smile vol) equals `delta`."""
+    def strike_for_delta(self, delta, F, sig_atm, T, wing_mult=1.0, iters: int = 60):
+        """Call strike whose BS delta (at its own smile vol, incl. `wing_mult`) equals `delta`."""
         s = sig_atm * np.sqrt(T)
         delta = np.asarray(delta, dtype=float)
         lo = np.zeros_like(delta)
         hi = np.full_like(delta, 3.0 * self.p.z_cap)
         for _ in range(iters):
             mid = 0.5 * (lo + hi)
-            fz = self.f(mid)
+            fz = self.f(mid) * (1.0 + (wing_mult - 1.0) * np.clip(mid / 1.2816, 0.0, 1.0))
             d1 = -mid / fz + 0.5 * s * fz
             too_high = ndtr(d1) > delta          # delta still too big -> go further OTM
             lo = np.where(too_high, mid, lo)

@@ -7,201 +7,187 @@ A simulation of a systematic **upside volatility premium** strategy:
 > **held to maturity**.
 
 - **Original design:** 25% on each expiry and equal weight on each strike.
-- **Tilted design (headline):** 80% of strike notional on 5–10-delta (1–4-delta get 5% each)
-  and 70% of roll notional on 4–5DTE (weights 15/15/35/35 on 2/3/4/5DTE).
+- **Tilted design:** 80% of strike notional on 5–10-delta and 70% of roll notional on 4–5DTE.
 
-Backtest window: **3 Jan 2011 – 22 Sep 2026** (3,953 SPX trading days). Pricing is calibrated
-to a real SPXW option chain (see "Pricing, v2").
+Backtest window: **Jan 2011 – Sep 2026**. Option pricing is **calibrated to real SPXW prices**
+(Barchart history from Jun 2023, plus CBOE, Yahoo and Barchart chain snapshots).
 
 ![tearsheet](results/tearsheet.png)
 
-## Headline results
+## Bottom line
 
-Returns are excess returns (collateral interest is not included). "1x" sells 1x NAV of notional
-per daily roll, about 3.9x NAV of short calls outstanding. "Ret @5% vol" is the return scaled to
-5% annualised volatility, so rows can be compared directly.
+| Evidence | Tilted strategy Sharpe |
+|---|---:|
+| First backtest (v1, assumed wing) | 4.2 |
+| Backtest priced off the 22 Sep 2026 chain (a rich-wing day) | 5.5 |
+| **Backtest calibrated to real SPXW prices, 2011–2026** | **1.5** |
+| Backtest, Jun 2023 – Sep 2026, wing priced day by day from real prices | 1.4 (1.3 on real hourly bars only) |
+| Same window, selling only when the wing is rich (top third) | **2.0** |
+| Real trades (sold at 5DTE, hedged at each daily close) | 0.9, in line with the backtest's once-a-day-hedged variants |
 
-| Scenario | CAGR % | Vol % | Sharpe | Ret @5% vol | Max DD % | Worst day % |
+The upside vol premium exists, but it's a **Sharpe ~1.5 strategy with a fat overnight-gap tail**,
+not the Sharpe 5–6 the earlier versions showed. They were too good because the call wing was
+priced about 20% too rich in vol terms (about 3x in price).
+
+## What the real prices (Barchart) showed
+
+Barchart keeps daily OHLC, volume and open interest for **expired** SPXW contracts from about
+**late May 2023**. `validate_history.py` sampled an expiry every 5 trading days
+(Jun 2023 – Sep 2026, 165 expiries):
+- 495 wing contracts, at the strikes the strategy would sell at 5DTE (5 / 7.5 / 10 delta);
+- 165 ATM contracts.
+
+Each contract was compared with the model on every day from 5DTE to 1DTE.
+
+![history](results/history_check.png)
+
+| Check | Result |
+|---|---|
+| 5–10-delta calls, real vol / model vol (22 Sep chain-calibrated) | **0.80** median (IQR 0.74–0.88), n = 1,053; real price about 1/3 of the model's |
+| Same, after calibration (wing × 0.82) | 1.006 median (IQR 0.92–1.10) |
+| ATM calls, real vol / model vol | **1.02**: ATM pricing (VolVue SPXW + short end) was already right |
+| Wing richness over time | 0.93 (2023H1) → 0.72 (2026H1), back to about 0.85–1.0 in Sep 2026 |
+| Wing by vol regime | Cheaper when vol is high (0.86 at ATM < 10%, 0.75 at 14–25%) |
+
+Barchart's bars were checked against the chain snapshots of 22 and 23 Sep 2026. The closes
+agree with the snapshot mids to within a few percent, so the timing is right. The 22 Sep chain,
+used for the earlier calibration, was a rich-wing day, after SPX rallied to record highs.
+
+**Real-price mini-backtest.** Each sampled contract is sold at its real 5DTE close (less a 3%
+half-spread), hedged at each daily close, and held to expiry:
+
+| | Real prices | Model (calibrated) | Model (22 Sep pricing) |
+|---|---:|---:|---:|
+| Average premium, bp of notional | 2.7 | 2.9 | 7.1 |
+| Average P&L after hedging, bp | 1.3 | 1.6 | 6.7 |
+| Sharpe, one expiry per week | 0.9 | 1.3 | 3.8 |
+| Worst expiry, bp | −162 | −113 | −52 |
+
+**Selling only when the wing is rich works in real trades.** Tercile of wing richness at the
+sale date (real vol / model vol, observable when you trade):
+
+| Wing at sale | Average P&L per expiry | Sharpe | Worst |
+|---|---:|---:|---:|
+| Cheap (median 0.71) | −3.6 bp | −1.0 | −162 bp |
+| Middle (0.80) | +1.3 bp | 0.4 | −116 bp |
+| **Rich (0.90)** | **+12.1 bp** | **3.2** | −43 bp |
+
+Richness persists: the week-to-week autocorrelation is 0.71.
+
+## Backtest results (pricing calibrated to real prices)
+
+Returns are excess returns. "1x" sells 1x NAV of notional per daily roll. "Ret @5% vol" scales
+each row to 5% annualised vol.
+
+| Scenario, 2011–2026 | CAGR % | Vol % | Sharpe | Ret @5% vol | Max DD % | Worst day % |
 |---|---:|---:|---:|---:|---:|---:|
-| **Tilted** (hourly hedge, calibrated pricing) | **12.9** | 2.0 | **6.0** | 30.0 | -2.3 | -1.5 |
-| Tilted, scaled 3x (~6% vol) | 43.7 | 6.1 | 6.0 | 30.0 | -6.9 | -4.6 |
-| **Tilted, stress pricing** (see below) | 5.9 | 1.5 | **3.8** | 18.8 | -2.8 | -1.1 |
-| Original design, equal weights | 10.0 | 1.6 | 6.1 | 30.4 | -1.8 | -1.2 |
-| Concentrated (5–10-delta and 4–5DTE only) | 17.0 | 2.7 | 5.9 | 29.5 | -3.0 | -2.0 |
-| Tilted, hedged once a day (close) | 11.2 | 2.6 | 4.1 | 20.4 | -3.3 | -2.1 |
-| Tilted, unhedged | 9.1 | 2.9 | 3.0 | 15.0 | -4.4 | -3.8 |
-| Tilted, only expiries actually listed at the time | 12.0 | 1.9 | 5.9 | 29.5 | -1.9 | -1.2 |
-| **ATM calls** (50-delta, 4–5DTE), hourly hedge | 24.5 | 7.6 | 2.9 | 14.7 | -15.4 | -6.2 |
-| **ATM replica** of the tilted strip (1DTE ATM, gamma-matched) | 3.0 | 1.5 | 2.0 | 10.0 | -4.9 | -1.1 |
-| v1 assumptions (first run, uncalibrated) | 8.3 | 1.7 | 4.75 | 23.8 | -2.6 | -1.2 |
+| **Tilted** (hourly hedge) | 3.7 | 2.4 | **1.53** | 7.7 | −4.5 | −1.9 |
+| Tilted, scaled 2.5x (~6% vol) | 9.3 | 5.9 | 1.54 | 7.7 | −11.1 | −4.7 |
+| Low-delta tilt (80% on 1–5-delta) | 2.7 | 1.5 | 1.73 | 8.7 | −2.9 | −1.2 |
+| Concentrated (5–10-delta, 4–5DTE only) | 5.4 | 3.0 | 1.77 | 8.8 | −5.3 | −2.3 |
+| Equal weights (original design) | 2.6 | 1.9 | 1.36 | 6.8 | −3.8 | −1.6 |
+| Tilted, hedged once a day | 0.8 | 3.7 | 0.24 | 1.2 | −18.5 | −3.6 |
+| Tilted, unhedged | −1.1 | 5.5 | −0.18 | −0.9 | −28.1 | −5.5 |
+| Tilted, high transaction costs | 2.8 | 2.4 | 1.19 | 6.0 | −5.2 | −1.9 |
+| Tilted, only expiries listed at the time | 3.0 | 2.4 | 1.24 | 6.2 | −5.4 | −2.2 |
+| Tilted, stress pricing (wing × 0.75, cheaper in high vol, high costs) | −2.2 | 3.0 | −0.70 | −3.5 | −32.5 | −2.3 |
+| ATM calls (50-delta, 4–5DTE), hourly hedge | 16.9 | 7.3 | 2.16 | 10.8 | −15.6 | −5.4 |
+| ATM replica of the tilted strip | 1.8 | 1.9 | 0.94 | 4.7 | −10.2 | −1.6 |
 
-![variants](results/nav_variants.png)
+| Scenario, Barchart window Jun 2023 – Sep 2026 | CAGR % | Vol % | Sharpe | Ret @5% vol | Max DD % | Share of days sold |
+|---|---:|---:|---:|---:|---:|---:|
+| Tilted, wing priced day by day from real prices | 3.2 | 2.2 | 1.44 | 7.2 | −3.1 | 100% |
+| **Same, sell only when the wing is rich (top third, ≥ 0.85)** | 2.1 | 1.1 | **1.96** | 9.8 | **−0.7** | 32% |
+| Same, rich days only, hedged once a day | 1.7 | 1.5 | 1.08 | 5.4 | −1.6 | 32% |
+| Low-delta tilt, real wing | 2.9 | 1.5 | 1.95 | 9.8 | −1.7 | 100% |
+| ATM calls 4–5DTE (ATM pricing validated) | 2.7 | 7.0 | 0.41 | 2.0 | −15.6 | 100% |
 
-Full tables are in [`results/RESULTS_TABLES.md`](results/RESULTS_TABLES.md): yearly returns, P&L
-attribution, results by delta and tenor, sub-periods, pricing sensitivity, the chain check, the
-gap stress test and the worst days.
+Full tables: [`results/RESULTS_TABLES.md`](results/RESULTS_TABLES.md),
+[`results/BARCHART_WINDOW.md`](results/BARCHART_WINDOW.md) and
+[`results/HISTORY_CHECK*.md`](results/HISTORY_CHECK_calibrated.md).
 
-## Why the numbers look too good, and what's left once you correct for it
+**Gap stress (tilted book, instant move at the close, % of NAV).** Hourly hedging can't react to
+an overnight gap:
 
-**1. v1 overpriced the options. That's fixed.** On the 22 Sep 2026 SPXW chain, v1 priced the
-5–10-delta strip at about **2x the real bid**. There were three causes:
-- VolVue's `SPX` ticker is the *monthly* options root, so its "10-day" ATM vol actually comes from
-  the nearest monthly expiry (11.25 vs 10.35 for `SPXW`).
-- 2–5-day options trade below 10-day vol: VIX1D is about 0.86 × VIX9D.
-- Weekends were given too much variance.
+| Instant SPX move | +3% | +5% | +8% | −10% |
+|---|---:|---:|---:|---:|
+| 1x, calm-market median | −5.4 | −12.4 | −22.9 | −1.8 |
+| 2.5x (~6% vol), calm-market median | −13.5 | −31.0 | −57.1 | −4.6 |
 
-v2 uses VolVue `SPXW`, a short-end factor from VIX1D/VIX9D, a weekend weight fitted to the
-chain, and a call wing fitted to the chain. The model now matches market bids: premium-weighted
-market/model bid = **0.999**.
-
-**2. After calibration, the edge got larger, not smaller.** Relative to ATM, the real market's
-call wing is *richer* than v1 assumed: a 10-delta call trades at 1.01 × ATM and a 1-delta call
-at 1.16 × ATM (v1 assumed 0.92 and 1.02). The realised SPX upside is much thinner than that
-pricing implies:
-
-| Delta at sale | 2d | 3d | 4d | 5d | 6d | 7d | 8d | 9d | 10d |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Realised ITM frequency | 0.1% | 0.5% | 1.0% | 1.8% | 2.7% | 3.8% | 4.9% | 6.1% | 7.5% |
-
-This agrees with academic evidence that OTM index calls are systematically overpriced
-(for example Bakshi, Madan & Panayotov, 2010). The *direction* of the edge is well supported.
-
-**3. What is still optimistic, and can't be fixed without historical chain data:**
-- **Wing pricing is anchored to one calm day (22 Sep 2026) and applied to all 15 years.** In
-  stress, and before the 2022 0DTE boom, the call wing was probably cheaper. The *stress pricing*
-  scenario uses:
-  - a wing 10% cheaper before May 2022;
-  - a wing that gets cheaper as vol rises (−0.5 × (ATM − 12%), floored at 0.75);
-  - ATM × 0.94;
-  - high transaction costs.
-
-  That cuts the Sharpe to **3.8**. Each 5% cheaper wing costs about 1.1 points of Sharpe
-  (wing × 0.85 gives Sharpe 2.8; × 0.80 gives 1.5).
-- **The Sharpe hides a tail the sample never delivered.** Hourly hedging can't react to an
-  **overnight gap**. The gap stress test below applies an instant move to every day's closing
-  book.
-
-**Gap stress test, tilted book, loss in % of NAV** (full table in RESULTS_TABLES.md):
-
-| Instant SPX move | +3% | +5% | +8% | +12% | -10% |
-|---|---:|---:|---:|---:|---:|
-| 1x, median day | -2.5 | -8.7 | -19 | -34 | -1.5 |
-| 1x, calm-market median (2d ATM < 12%) | -4.1 | -11.0 | -22 | -36 | -1.7 |
-| 3x (~6% vol), calm-market median | -12 | -33 | -65 | -109 | -4.9 |
-
-Since 2017, the largest SPX overnight up-gaps were +4.8%, +3.6% and +3.0%. All of them came in
-high-vol regimes, when strikes were far away. **A +5% overnight gap in a calm market has never
-happened in the sample, but it would cost a third of NAV at 6% vol.** That, not the realised
-drawdown, is what should set the size.
-
-## Can you sell ATM and dynamically adjust to make an "artificial" 5–10-delta?
-
-**Not in a way that keeps the premium.**
-
-- A delta-hedged option earns roughly the sum of ½·Γ·S²·(σ²_implied − σ²_realised) over its life.
-  Delta hedging (trading futures) only changes **delta**. It can't move where the **gamma** and
-  vega sit, which is at the option's strike. So short ATM plus dynamic hedging gives short gamma
-  at spot, in both directions, not the upside-strike exposure.
-- Recreating a 5–10-delta call's payoff purely by trading futures earns **no premium**. You get
-  paid σ_implied only if you actually sell the option; a synthetic position is "sold" at realised vol.
-- The closest you can get is to sell ATM options each day, sized to match the strip's dollar gamma
-  (**ATM replica**). That earns the *ATM* implied vol on the strip's gamma path. It gives up the
-  wing premium, which is the whole edge, and it sells cheaper right after rallies, because ATM vol
-  falls as SPX rises (spot-vol beta about −5).
-- **Tested:** the ATM replica gets Sharpe 2.0 and 10%/yr at 5% vol, flat since 2022. Plain ATM
-  calls get Sharpe 2.9, 15%/yr at 5% vol, a −15% drawdown and down years in 2024 and 2025. The
-  real 5–10-delta strip gets Sharpe 6.0 and 30%/yr at 5% vol.
-  **The premium lives in the far-OTM wing, not at the money.** If execution in the wing is the
-  worry, the tilt to 5–10-delta (more liquid, less affected by the 0.05 tick) is the right
-  compromise, not ATM.
+The largest SPX overnight up-gaps since 2017 were +4.8%, +3.6% and +3.0%, all in high-vol regimes.
 
 ## Conclusions you can act on
 
-1. **The tilt doesn't raise the Sharpe** (6.0 vs 6.1 for equal weights). It earns more premium
-   per unit of notional, with proportionally more risk (12.9% vs 10.0% CAGR; 2.0% vs 1.6% vol).
-   Use it for capital efficiency and liquidity, not as a source of extra edge. Going all the way
-   (5–10-delta and 4–5DTE only) behaves the same (Sharpe 5.9).
-2. **Size to the gap stress, not to the backtest vol.** If a +5% calm-market overnight gap should
-   cost no more than about 10% of NAV, run about 1x notional per roll (about 2% vol and 13%/yr
-   modelled, 6%/yr under stress pricing). Running 3x for 6% vol means a +5% gap costs about a third.
-3. **Keep hourly hedging.** Sharpe is 6.0 hourly, 4.1 with once-a-day hedging and 3.0 unhedged.
-4. **Don't replace the wing with ATM.** It gives up most of the edge (see above).
-5. **Watch the wing premium every day.** Run `python validate_chain.py`: it snapshots the CBOE
-   SPXW chain and prints market/model bids and the fitted wing (10-delta and 1-delta vol / ATM).
-   If the 10-delta call vol falls toward about 0.85 × ATM, the edge roughly halves (Sharpe about 2.8).
-   Log so far (tilted strip, premium at real bids vs model bids):
+1. **Plan for Sharpe ~1.5, not 5–6.** That's roughly 7–8%/yr at 5% vol, before an unobserved
+   gap tail. The earlier numbers came from pricing the wing off one rich day.
+2. **Trade the wing's richness.** Sell only when the 5–10-delta wing is rich against the model
+   (real/model vol ≥ about 0.85; in the 2023–26 data, the top third of days). That lifted the
+   Sharpe to about 2.0 and cut the drawdown to −0.7%, while trading a third of the days.
+   Measure it live with `python validate_chain.py --source barchart`.
+   **As of 22–23 Sep 2026 the wing is rich (about 0.94–1.0)**, so the rule says sell.
+3. **Lower deltas, not higher.** Real prices favoured the 5-delta strikes over 10-delta (per
+   contract, 2.1 vs 0.7 bp). The low-delta tilt beats your 5–10-delta tilt: Sharpe 1.73 vs 1.53
+   over 2011–2026 and 1.95 vs 1.44 in the Barchart window.
+4. **Hourly hedging is the whole edge.** Hedging once a day drops the Sharpe to about 0.2, and
+   unhedged loses money. Partly this is real SPX behaviour: intraday moves trend slightly
+   (open-to-close variance is 1.14x the sum of hourly variances on real bars), and hourly hedging
+   avoids paying for that.
+5. **Size small, or buy gap protection.** At 1x (about 2.4% vol), a +5% calm-market overnight gap
+   costs about 12% of NAV, three years of returns. At 6% vol it's about 31%. With Sharpe ~1.5,
+   scaling up without a far-OTM call hedge is a poor trade.
+6. **ATM isn't a substitute.** Real ATM pricing is fair (model/real 1.02), and selling ATM calls
+   earned Sharpe 0.4 in 2023–26 and ran a −16% drawdown.
+7. **Keep collecting data.** Run `validate_chain.py --source barchart` daily (live wing richness)
+   and `validate_history.py` monthly (extends the real-price history). For production use,
+   license historical data (Barchart OnDemand, CBOE DataShop, OptionMetrics or ORATS) rather
+   than reading the public website.
 
-   | Close | SPX | 10d / 1d call vol vs ATM (fit) | Real / model premium | Premium per daily roll at 1x |
-   |---|---:|---|---:|---:|
-   | 2026-09-22 | 7,765 | 1.01 / 1.16 | 0.98 | 3.1 bp of NAV |
-   | 2026-09-23 | 7,706 (−0.75%) | 0.96 / 1.10 | **0.77** | 3.4 bp of NAV |
-
-   One down day was enough to cheapen the 4–5DTE wing by about 25% relative to the model, while
-   ATM still matched. The wing premium moves day to day, which the backtest's static wing ignores.
-   Real 5–10-delta spreads were about 6% of mid, in line with the modelled 3% half-spread.
-6. **Contract size.** An SPX contract is about $770k notional. At 1x NAV per daily roll with the
-   tilted 40-strike strip, you need about $50m NAV for 1–3 contracts per strike. Smaller accounts
-   need XSP (1/10 size) or fewer strikes (e.g. 5, 7 and 10 delta only).
-7. **The next real validation step is historical SPXW end-of-day quotes** (CBOE DataShop,
-   OptionMetrics, ORATS), to replace the modelled surface for 2011–2026. Until then, treat
-   Sharpe 6 as an upper bound, and the stress-pricing case (3.8) as a more realistic but still
-   pre-cost-of-tail figure.
-8. **A gap hedge is worth testing next.** Buying further-OTM calls against the short strip
-   (a call spread, or an upside "fly") caps the overnight-gap loss. It costs part of the premium,
-   because the far wing is expensive (1-delta at 1.16 × ATM, and more below 1 delta).
-
-## Pricing, v2 (calibrated)
+## Pricing model (v3)
 
 | Component | Implementation |
 |---|---|
-| ATM level | **VolVue `SPXW` 10-day ATM mean IV**. Before Apr 2014 the `SPX` root is used; bad prints are replaced by VIX9D × the local ratio. It is converted to business time over the exact 10-calendar-day window. |
-| Short end | The option's ATM vol = 10-day level × k(T). The first day's variance is VIX1D²/VIX9D² of the average, and the remaining days are rescaled so the 10-day total is unchanged. VIX1D is used from Apr 2023; before that the median ratio of 0.86 is used. |
-| Weekends | Priced at 0.05 of a trading day's variance. The chain fit gives 0–0.05; realised SPX gives 0.02–0.07. |
-| Call wing | Quadratic in z = ln(K/F)/(σ_ATM√T), anchored at 10-delta = **1.01 × ATM** and 1-delta = **1.16 × ATM**, fitted to the SPXW chain. |
-| Level fit | ATM × **0.973** so model bids equal market bids on the 22 Sep 2026 chain (`validate_chain.py --calibrate`). |
-| Intraday vol | The open level (previous close × the VIX9D open move), then a spot-vol beta: −5 on rallies, −7 on sell-offs. |
-| Execution | Sell at mid − max(0.025, 3% × mid). A strike isn't sold if its bid is below 0.05. |
+| ATM level | VolVue `SPXW` 10-day ATM IV (the `SPX` ticker is the *monthly* root). Converted to business time over the exact 10-day window, then an ATM multiplier of × 0.973. **Validated against real ATM prices: model/real = 1.02.** |
+| Short end | The option's ATM vol = 10-day level × a factor from VIX1D/VIX9D (first-day variance), keeping the 10-day total unchanged. |
+| Weekends | 0.05 of a trading day's variance (fitted to the chain; realised SPX gives 0.02–0.07). |
+| Call wing | Shape fitted to the SPXW chain (10-delta 1.01 × ATM, 1-delta 1.16 × ATM), then **× 0.82 at and beyond 10-delta**, ramping in from ATM. The 0.82 is the median of real SPXW prices, Jun 2023 – Sep 2026. Strikes are chosen at the resulting market deltas. |
+| Intraday vol | The open level, then a spot-vol beta: −5 on rallies, −7 on sell-offs. |
+| Execution | Sell at mid − max(0.025, 3% × mid). Real 5–10-delta spreads were about 6% of mid (a 3% half-spread). |
 
 ## How the simulation works
 
 | Component | Implementation |
 |---|---|
-| Underlying | SPX, daily OHLC (Yahoo). Real **hourly bars from Oct 2023**. Earlier hourly marks are synthetic, bridged between the real open and close with intraday variance from the day's high/low. On overlapping days this was about 0.5%/yr more flattering than real bars (checked in v1). |
-| Roll | Every trading day at the close. Sells expiries d+2 to d+5 trading days, strikes on the 5-point grid at the target deltas. |
+| Underlying | SPX daily (Yahoo). **Real hourly bars from Oct 2023.** Earlier hourly marks are a Brownian bridge between the real open and close, variance × 1.2 so its intraday statistics match real bars (variance ratio 1.14, intraday vol 11.6%). |
+| Roll / sale | Every trading day at the close, expiries d+2 to d+5, strikes on the 5-point grid at the target market deltas. |
 | Settlement | Held to expiry, cash-settled on the official close (SPXW PM). |
-| Delta hedge | Rebalanced at the open, 10:30 … 15:30 and the close to the Black-Scholes delta at the smile vol. Uses SPX/ES as a zero-carry future, costing 0.15 index points per unit traded. |
-| ATM replica | The strip is virtual. Each close the engine sells 1DTE ATM calls, with quantity = the strip's dollar gamma / ATM gamma, and hedges them hourly. |
-| Gap stress | Each close, the book is repriced after an instant spot move (vol shifted by the spot-vol beta). |
+| Delta hedge | Rebalanced at the open, 10:30 … 15:30 and the close. Uses SPX/ES as a zero-carry future, costing 0.15 points per unit. |
+| Variants | Once-a-day or no hedging; historically listed expiries only; weekly roll; ATM calls; gamma-matched ATM replica; daily wing level from a file (`wing_file`); rich-wing filter (`roll_min_wing`); gap stress. |
 
-### Limitations
+## Data sources
 
-- There are no historical strike-level SPXW quotes. The surface is modelled and anchored to one
-  real chain.
-- The wing premium relative to ATM is static, apart from the stress scenario.
-- Before May 2022 SPX didn't list every weekday expiry. The base case assumes it did; the
-  "listed expiries only" scenario uses the real calendar.
-- Margin, financing and collateral yield are ignored.
+- **Yahoo Finance:** SPX daily and hourly bars, VIX9D, VIX1D, VIX, ^IRX, and the SPXW closing chain.
+- **VolVue** (`VOLVUE_API_KEY`): SPX and SPXW constant-maturity ATM IV.
+- **CBOE** delayed quotes: SPXW chain snapshots.
+- **Barchart** (barchart.com, read through a headless browser, low volume, personal research):
+  SPXW chain snapshots with Barchart IV and greeks (`ufly/barchart.py`), and daily history of
+  expired SPXW contracts from about May 2023. No Barchart API key is used.
+- **IBKR:** not connected. SPX options trade only on Cboe, so the quotes are the same NBBO.
+
+Raw vendor data (`data/`: chains, Barchart histories, per-contract comparisons) is git-ignored and
+not redistributed. Only aggregated statistics and charts are committed.
 
 ## Run it
 
 ```bash
-pip install -r requirements.txt
-export VOLVUE_API_KEY=...            # VolVue ATM vols (falls back to the VIX9D proxy)
-python run_backtest.py               # downloads data to ./data on first run, writes ./results
-python validate_chain.py             # today's CBOE SPXW chain vs the model (saved to data/chains/)
-python validate_chain.py --source yahoo   # same check from Yahoo's closing quotes (if the CBOE CDN is stale)
-python validate_chain.py --file data/chains/spx_YYYY-MM-DD.json --calibrate
+pip install -r requirements.txt playwright     # Chromium for Barchart: /opt/pw-browsers/chromium or CHROMIUM_PATH
+export VOLVUE_API_KEY=...
+python run_backtest.py                          # full-period scenarios -> results/RESULTS_TABLES.md
+python validate_chain.py --source barchart      # today's SPXW chain vs model (also: cboe, yahoo)
+python validate_history.py --wing-mult 1.0      # real Barchart history vs the uncorrected model
+python validate_history.py --tag _calibrated    # ... vs the calibrated model (wing x0.82)
+python validate_history.py --targets 0.5 --core 0.3,0.7 --tag _atm   # ATM check
+python run_barchart_window.py                   # Jun-2023+ backtest with the real wing level and filter
 ```
 
-Code layout:
-
-- `ufly/data.py`: Yahoo data (SPX daily/hourly, VIX9D, VIX1D), cleaning, VolVue merge
-- `ufly/volvue.py`: VolVue API client (`api.volvue.com/query`)
-- `ufly/vol.py`: Black-Scholes, smile model, strike-for-delta, business-time variance clock
-- `ufly/paths.py`: hourly marks (real or bridged)
-- `ufly/backtest.py`: strategy engine (`Config` holds every parameter; strip or ATM-replica mode, gap stress)
-- `ufly/metrics.py`: performance statistics
-- `run_backtest.py`: scenarios, tables and charts
-- `validate_chain.py`: model vs real SPXW chain, and ATM-level calibration
-
-Raw market data (`data/`, including chain snapshots) is git-ignored and not redistributed.
+Code: `ufly/` holds data, volvue, barchart, vol, paths, backtest and metrics.
+`run_backtest.py`, `run_barchart_window.py`, `validate_chain.py` and `validate_history.py` are the entry points.

@@ -2,12 +2,15 @@
 
     python validate_chain.py                  # CBOE delayed-quotes snapshot, compare, save to data/chains/
     python validate_chain.py --source yahoo   # Yahoo chain (closing NBBO; use when the CBOE CDN is stale)
+    python validate_chain.py --source barchart  # barchart.com chain incl. Barchart IV / delta (headless Chromium)
     python validate_chain.py --file X         # use a saved snapshot (.json CBOE or .csv Yahoo)
     python validate_chain.py --calibrate      # also solve the ATM multiplier that matches market bids
 
 SPX/SPXW options are listed only on Cboe, so these quotes are the same NBBO a
 broker such as IBKR shows (IBKR adds its own greeks / model IV).
 
+The model is priced at each expiry's put-call-parity forward, so snapshots taken
+at slightly different times (sources differ) stay comparable.
 For each 2-5DTE expiry it compares the model ATM vol with the market ATM vol
 (business time) and the model bid with the real bid for the 1..10-delta strip,
 and fits the call wing (vol / ATM vs normalised moneyness) to the market.
@@ -28,7 +31,7 @@ import pandas as pd
 from scipy.optimize import brentq
 from scipy.special import ndtr, ndtri
 
-from ufly.backtest import Config, atm_vols
+from ufly.backtest import Config, atm_vols, short_end_factor
 from ufly.data import DATA_DIR, load_market
 from ufly.vol import Smile, VarianceClock, bs_call
 
@@ -43,6 +46,13 @@ def fetch(source: str = "cboe", n_exp: int = 8) -> Path:
         day = json.loads(raw)["data"]["last_trade_time"][:10]
         p = CHAINS / f"spx_{day}.json"
         p.write_bytes(raw)
+        return p
+    if source == "barchart":
+        from ufly.barchart import fetch_chain
+        ch, spot, ts = fetch_chain(n_exp)
+        ch["spot"], ch["day"], ch["snapshot"] = spot, ts.date().isoformat(), ts.isoformat()
+        p = CHAINS / f"spx_{ts.date().isoformat()}_barchart.csv"
+        ch.to_csv(p, index=False)
         return p
     import yfinance as yf
     t = yf.Ticker("^SPX")
@@ -88,8 +98,8 @@ def compare(chain_path, cfg: Config = Config(), dtes=(2, 3, 4, 5)):
     clock = VarianceClock(dates.values, cfg.clock)
     _, sc, rho, eff10 = atm_vols(daily, cfg, VarianceClock(daily.index.values, cfg.clock))
     dl = len(daily) - 1
-    lam = (eff10[dl] - rho[dl] ** 2) / (eff10[dl] - 1)
     sm = Smile(cfg.smile)
+    wm = cfg.wing_mult * float(np.exp(cfg.wing_vol_beta * (sc[dl] - 0.12)))
     strip, wing, quotes = [], [], []
     for n in dtes:
         e = dates[dl + n]
@@ -98,9 +108,7 @@ def compare(chain_path, cfg: Config = Config(), dtes=(2, 3, 4, 5)):
         if c.empty:
             continue
         T = float(clock.T(dl, 1.0, dl + n))
-        x = T * 252
-        a = sc[dl] * cfg.atm_mult * np.sqrt((rho[dl] ** 2 * min(x, 1) + lam * max(x - 1, 0)) / x) \
-            if cfg.short_end else sc[dl] * cfg.atm_mult
+        a = sc[dl] * cfg.atm_mult * (float(short_end_factor(T, rho[dl], eff10[dl])[0]) if cfg.short_end else 1.0)
         cm, pm = (c.bid + c.ask) / 2, (p.bid + p.ask) / 2
         Ks = c.index.intersection(p.index)
         near = Ks[np.argsort(np.abs(Ks - S))[:6]]
@@ -109,9 +117,9 @@ def compare(chain_path, cfg: Config = Config(), dtes=(2, 3, 4, 5)):
         K0 = near[0]
         atm_mkt = 0.5 * (ivf(cm[K0], K0) + ivf(pm[K0] + F - K0, K0))
         tg = np.asarray(cfg.deltas, float)
-        K = np.maximum(np.round(sm.strike_for_delta(tg, S, a, T) / cfg.strike_step) * cfg.strike_step,
-                       np.ceil(S / cfg.strike_step) * cfg.strike_step)
-        mid = bs_call(S, K, sm.vol(K, S, a, T), T)[0]
+        K = np.maximum(np.round(sm.strike_for_delta(tg, F, a, T, wm) / cfg.strike_step) * cfg.strike_step,
+                       np.ceil(F / cfg.strike_step) * cfg.strike_step)
+        mid = bs_call(F, K, sm.vol(K, F, a, T, wm), T)[0]
         bid = mid - np.maximum(cfg.tc_opt_min, cfg.tc_opt_pct * mid)
         for t, k, b in zip(tg, K, bid):
             if k in c.index and b >= cfg.min_bid:
@@ -133,10 +141,11 @@ def compare(chain_path, cfg: Config = Config(), dtes=(2, 3, 4, 5)):
                 i = int(np.argmin(np.abs(ds - t)))
                 k = ks[i]
                 r = c.loc[k]
-                mod_mid = float(bs_call(S, k, sm.vol(k, S, a, T), T)[0])
+                mod_mid = float(bs_call(F, k, sm.vol(k, F, a, T, wm), T)[0])
                 quotes.append(dict(expiry=e.date(), dte=n, target=t, strike=k, otm_pct=100 * (k / F - 1),
                                    bid=r.bid, ask=r.ask, mid=(r.bid + r.ask) / 2, spread=r.ask - r.bid,
                                    iv=vs[i], delta=ds[i], volume=r.get("volume", np.nan), oi=r.get("oi", np.nan),
+                                   bc_iv=r.get("bc_iv", np.nan), bc_delta=r.get("bc_delta", np.nan),
                                    model_mid=mod_mid,
                                    model_bid=mod_mid - max(cfg.tc_opt_min, cfg.tc_opt_pct * mod_mid)))
     strip, wing = pd.DataFrame(strip), pd.DataFrame(wing)
@@ -155,7 +164,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--file")
     ap.add_argument("--calibrate", action="store_true")
-    ap.add_argument("--source", choices=["cboe", "yahoo"], default="cboe")
+    ap.add_argument("--source", choices=["cboe", "yahoo", "barchart"], default="cboe")
     args = ap.parse_args()
     path = Path(args.file) if args.file else fetch(args.source)
     cfg = Config()
@@ -171,8 +180,9 @@ def main():
     print("market call wing fit: " + ", ".join(f"{k} = {v:.3f}" for k, v in fit.items()))
     q = compare.quotes
     print(f"\nSPXW call quotes nearest each target delta (spot {load_chain(path)[1]:.2f}):")
-    print(q.round({"otm_pct": 2, "mid": 3, "spread": 2, "iv": 4, "delta": 3, "model_mid": 2, "model_bid": 2})
-          .to_string(index=False))
+    q = q.dropna(axis=1, how="all")
+    print(q.round({"otm_pct": 2, "mid": 3, "spread": 2, "iv": 4, "delta": 3, "model_mid": 2, "model_bid": 2,
+                   "bc_iv": 4, "bc_delta": 3}).to_string(index=False))
     if args.calibrate:
         m = brentq(lambda m: bid_ratio(compare(path, replace(cfg, atm_mult=m))[1]) - 1.0, 0.6, 1.4, xtol=1e-3)
         print(f"ATM multiplier matching market bids: {m:.3f}")

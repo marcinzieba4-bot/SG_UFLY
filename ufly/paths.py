@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 
 N_INTRADAY = 6  # 10:30 .. 15:30
+VAR_MULT = 1.2  # bridge variance x1.2: matches real hourly bars on Oct-2023+ days (open-to-close /
+                # sum-of-hourly variance ratio 1.14, intraday vol 11.6%); x1.0 gave 1.26 / 11.0%
 
 
 @dataclass
@@ -28,9 +30,9 @@ class DayMarks:
     real: bool          # True if from actual hourly bars
 
 
-def _synthetic_day(rng, prev_close, o, h, l, c, stale_open, f_on):
+def _synthetic_day(rng, prev_close, o, h, l, c, stale_open, f_on, var_mult=1.0):
     lnL, lnH = np.log(l), np.log(h)
-    park = (np.log(h / l)) ** 2 / (4 * np.log(2))          # intraday variance
+    park = var_mult * (np.log(h / l)) ** 2 / (4 * np.log(2))   # intraday variance
     if stale_open:
         day_var = park / (1 - f_on)
         r = np.log(c / prev_close)
@@ -52,7 +54,7 @@ def _synthetic_day(rng, prev_close, o, h, l, c, stale_open, f_on):
 
 
 def build_marks(daily: pd.DataFrame, hourly: pd.DataFrame | None, seed: int = 7,
-                f_on: float = 0.20, use_real: bool = True) -> list[DayMarks]:
+                f_on: float = 0.20, use_real: bool = True, var_mult: float = VAR_MULT) -> list[DayMarks]:
     rng = np.random.default_rng(seed)
     hourly_days = {}
     if hourly is not None and use_real:
@@ -69,7 +71,7 @@ def build_marks(daily: pd.DataFrame, hourly: pd.DataFrame | None, seed: int = 7,
             out.append(DayMarks(dt, u, spot, True))
         else:
             stale = prev_close is not None and abs(o / prev_close - 1) < 2e-4 and dt.year < 2017
-            u, spot, _ = _synthetic_day(rng, prev_close if prev_close else o, o, h, l, c, stale, f_on)
+            u, spot, _ = _synthetic_day(rng, prev_close if prev_close else o, o, h, l, c, stale, f_on, var_mult)
             out.append(DayMarks(dt, u, spot, False))
         prev_close = c
     return out

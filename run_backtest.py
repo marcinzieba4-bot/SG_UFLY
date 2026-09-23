@@ -39,10 +39,13 @@ plt.rcParams.update({
 
 # weight tilt: 80% of strike notional on 5-10 delta, 70% of roll notional on 4-5DTE
 TILT_DELTA_W = (0.05,) * 4 + (0.8 / 6,) * 6
+LOW_DELTA_W = (0.16,) * 5 + (0.04,) * 5          # 80% on 1-5 delta
 TILT_DTE_W = (0.15, 0.15, 0.35, 0.35)
 MAIN = "Tilted"
+CHAIN = "Tilted, 22-Sep chain pricing (wing x1.00)"
 V1 = "v1 assumptions (equal wt)"
 STRESS = "Tilted, stress pricing"
+LOW = "Low-delta tilt (80% on 1-5d)"
 TARGET_VOL = 5.0
 
 
@@ -57,18 +60,19 @@ def ensure_data(refresh: bool) -> None:
 def scenarios() -> list[Config]:
     tilted = Config(name=MAIN, weights=TILT_DTE_W, delta_weights=TILT_DELTA_W)
     return [
-        Config(name=V1, atm_source="volvue", short_end=False, atm_mult=1.0,
+        Config(name=V1, atm_source="volvue", short_end=False, atm_mult=1.0, wing_mult=1.0,
                smile=SmileParams(call10=0.92, call1=1.02), clock=ClockParams(w_nt=0.10)),
-        Config(name="Calibrated, equal weights"),
+        replace(tilted, name=CHAIN, wing_mult=1.0),
         tilted,
+        Config(name="Equal weights"),
+        replace(tilted, name=LOW, delta_weights=LOW_DELTA_W),
         Config(name="Concentrated (5-10d, 4-5DTE only)", dtes=(4, 5), weights=(0.5, 0.5),
                deltas=tuple(np.round(np.arange(5, 11) / 100, 2))),
-        replace(tilted, name="Tilted, no chain haircut (ATM x1.00)", atm_mult=1.0),
         replace(tilted, name="Tilted, hedge daily (close)", hedge="daily"),
         replace(tilted, name="Tilted, unhedged", hedge="none"),
         replace(tilted, name="Tilted, high t-costs", tc_opt_min=0.05, tc_opt_pct=0.05, tc_hedge_pts=0.25),
         replace(tilted, name="Tilted, listed expiries only", listed_only=True),
-        replace(tilted, name=STRESS, wing_pre2022=0.9, wing_vol_slope=0.5, atm_mult=0.94,
+        replace(tilted, name=STRESS, wing_mult=0.75, wing_vol_beta=-0.7,
                 tc_opt_min=0.05, tc_opt_pct=0.05, tc_hedge_pts=0.25),
         Config(name="ATM calls (50d), 4-5DTE", dtes=(4, 5), weights=(0.5, 0.5), deltas=(0.5,)),
         replace(tilted, name="ATM replica of tilted strip (1DTE)", mode="replica", replica_dte=1),
@@ -78,15 +82,11 @@ def scenarios() -> list[Config]:
 def sensitivity(base: Config, daily, hourly, marks) -> pd.DataFrame:
     """Re-price the tilted strategy with the call wing and the ATM level shifted."""
     rows = []
-    for kind, grid in (("wing", [0.80, 0.85, 0.90, 0.95, 1.00, 1.05]), ("atm", [0.90, 0.94, 0.973, 1.00, 1.03])):
+    for kind, grid in (("wing", [0.70, 0.75, 0.78, 0.82, 0.86, 0.90, 1.00]), ("atm", [0.90, 0.94, 0.973, 1.00, 1.03])):
         for m in grid:
-            if kind == "wing":
-                cfg = replace(base, smile=SmileParams(call10=1.01 * m, call1=1.16 * m))
-            else:
-                cfg = replace(base, atm_mult=m)
+            cfg = replace(base, wing_mult=m) if kind == "wing" else replace(base, atm_mult=m)
             st = stats(run(cfg, daily, hourly, marks).daily)
-            rows.append({"shift": kind, "multiplier": m, "10d call vol/ATM": cfg.smile.call10,
-                         "1d call vol/ATM": cfg.smile.call1, "ATM mult": cfg.atm_mult,
+            rows.append({"shift": kind, "multiplier": m, "wing mult": cfg.wing_mult, "ATM mult": cfg.atm_mult,
                          "CAGR %": st["CAGR %"], "Vol %": st["Vol %"], "Sharpe": st["Sharpe"],
                          "MaxDD %": st["MaxDD %"]})
     return pd.DataFrame(rows)
@@ -106,8 +106,7 @@ def charts(res: dict, sens: pd.DataFrame, lev_res) -> None:
     d = b.daily
 
     fig, ax = plt.subplots(figsize=(9, 4.4))
-    keys = [MAIN, STRESS, "Concentrated (5-10d, 4-5DTE only)", V1,
-            "ATM calls (50d), 4-5DTE", "ATM replica of tilted strip (1DTE)"]
+    keys = [MAIN, CHAIN, LOW, STRESS, "ATM calls (50d), 4-5DTE", "ATM replica of tilted strip (1DTE)"]
     for i, k in enumerate(keys):
         nv = scaled_nav(res[k].daily.ret)
         ax.plot(nv.index, nv, color=C[i], lw=1.8 if i == 0 else 1.1, label=k)
@@ -120,7 +119,7 @@ def charts(res: dict, sens: pd.DataFrame, lev_res) -> None:
     ax = axs[0, 0]
     ax.plot(d.index, d.nav, color=C[0], label="Tilted (1x)")
     ax.plot(lev_res.daily.index, lev_res.daily.nav, color=C[1], label=f"Scaled {lev_res.cfg.leverage:.1f}x")
-    ax.set_yscale("log"); ax.set_title("NAV (log), tilted strategy, calibrated pricing"); ax.legend(fontsize=8)
+    ax.set_yscale("log"); ax.set_title("NAV (log), tilted, pricing calibrated to real SPXW prices"); ax.legend(fontsize=8)
     ax = axs[0, 1]
     for i, (lab, nv) in [(1, (f"Scaled {lev_res.cfg.leverage:.1f}x", lev_res.daily.nav)), (0, ("Tilted (1x)", d.nav))]:
         dd = 100 * (nv / nv.cummax() - 1)
@@ -146,13 +145,13 @@ def charts(res: dict, sens: pd.DataFrame, lev_res) -> None:
     ax.set_xticks(x, [f"{int(round(100 * v))}d" for v in g.index])
     ax.set_title("Implied vs realised ITM probability (%)"); ax.legend(fontsize=8)
     ax = axs[2, 1]
-    for i, kind, lab in [(0, "wing", "Call-wing vol multiplier"), (1, "atm", "ATM vol multiplier")]:
-        s = sens[sens["shift"] == kind]
-        ax.plot(s.multiplier, s.Sharpe, color=C[i], marker="o", ms=4, label=lab)
+    s = sens[sens["shift"] == "wing"]
+    ax.plot(s.multiplier, s.Sharpe, color=C[0], marker="o", ms=4, label="Sharpe")
     ax.axhline(0, color=INK2, lw=0.8)
-    ax.axvline(1.0, color=INK2, lw=0.8, ls="--")
-    ax.set_xlabel("multiplier on calibrated pricing (1.0 = matches SPXW chain 2026-09-22)")
-    ax.set_title("Sharpe vs option pricing assumptions"); ax.legend(fontsize=8)
+    ax.axvline(0.82, color=C[1], lw=1.0, ls="--", label="real SPXW prices 2023-26 (median)")
+    ax.axvline(1.00, color=INK2, lw=0.8, ls=":", label="22-Sep-2026 chain (rich-wing day)")
+    ax.set_xlabel("call-wing vol multiplier")
+    ax.set_title("Sharpe vs call-wing pricing"); ax.legend(fontsize=8)
     fig.tight_layout(); fig.savefig(OUT / "tearsheet.png", dpi=150); plt.close(fig)
 
     fig, axs = plt.subplots(1, 2, figsize=(10, 3.6))
@@ -202,11 +201,11 @@ def main() -> None:
         for r in list(res.values()) + [lev_res]]
     summ.to_csv(OUT / "summary.csv")
     years = pd.DataFrame({k: yearly(res[k].daily) for k in
-                          [MAIN, STRESS, "Calibrated, equal weights", V1, "ATM calls (50d), 4-5DTE",
+                          [MAIN, CHAIN, LOW, STRESS, "ATM calls (50d), 4-5DTE",
                            "ATM replica of tilted strip (1DTE)"]})
     years[lev_res.cfg.name] = yearly(lev_res.daily)
     att = pd.DataFrame({k: attribution(res[k].daily) for k in
-                        [V1, "Calibrated, equal weights", MAIN, "Tilted, hedge daily (close)",
+                        [V1, CHAIN, MAIN, LOW, "Tilted, hedge daily (close)",
                          "ATM calls (50d), 4-5DTE", "ATM replica of tilted strip (1DTE)"]})
 
     b = res[MAIN]
@@ -224,6 +223,7 @@ def main() -> None:
     sub = {}
     for lab, a, z in [("2011-2016", "2011", "2016"), ("2017-2021", "2017", "2021"),
                       ("2022-2026 (daily expiries listed)", "2022", "2026"),
+                      ("Jun-2023+ (Barchart price window)", "2023-06-01", "2026"),
                       ("Oct-2023+ (real hourly bars)", "2023-10-25", "2026")]:
         dd = b.daily.loc[a:z].copy()
         dd["nav"] = 100 * dd.nav / (dd.nav.iloc[0] / (1 + dd.ret.iloc[0]))   # rebase: 100 before first day
@@ -280,8 +280,9 @@ def main() -> None:
             "Worst day %", "Worst 5d %", "Skew", "Hit rate %"]
     md = ["# Results tables (auto-generated by run_backtest.py)\n",
           f"Period: {b.daily.index[0].date()} to {b.daily.index[-1].date()} ({len(b.daily)} trading days). "
-          "Pricing: VolVue SPXW 10d ATM -> short-end (VIX1D/VIX9D) -> call wing, calibrated to the SPXW chain "
-          "(except the v1 row).\n",
+          "Pricing: VolVue SPXW 10d ATM -> short-end (VIX1D/VIX9D) -> call wing (shape from the SPXW chain, level "
+          "x0.82 from real Barchart SPXW prices Jun-2023..Sep-2026, validate_history.py). v1 and the 22-Sep chain "
+          "rows are the earlier, richer pricing for reference.\n",
           "## Scenario summary\n", fmt_table(summ[cols]),
           "\n## Calendar-year returns (%)\n", fmt_table(years),
           "\n## P&L attribution (% of initial NAV, additive)\n", fmt_table(att, 1),

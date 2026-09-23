@@ -3,8 +3,12 @@
 VolVue publishes constant-maturity ATM implied vols (call / put / mean of the
 ATM options with expiries closest to the target, Black-Scholes, 10/20/30...
 calendar days) plus an IV-skew measure; there is no per-strike / per-delta
-wing data.  We use the SPX 10-day ATM mean IV as the ATM level for 2-5DTE
-options (replacing the VIX9D-based proxy wherever VolVue has data).
+wing data.
+
+Ticker matters: "SPX" is the monthly (AM-settled) root, so its "10-day" vol
+comes from the nearest *monthly* expiry (often 2-4 weeks away).  "SPXW" (the
+weeklies/dailies, from 2014-04) gives a true ~10-day ATM vol and matches the
+CBOE chain (2026-09-22: SPXW 10.35 vs chain 10.31; SPX 11.25 = Oct-16 monthly).
 
 The raw vendor data is cached to data/ (git-ignored) and not redistributed.
 """

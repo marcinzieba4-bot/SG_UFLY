@@ -17,10 +17,10 @@ so the same shape applies at every tenor/vol level (sticky-delta regime):
 
 ATM level
 ---------
-Default: VolVue SPX 10-day ATM implied vol (see volvue.py).  Fallback / proxy:
-VIX9D is a 9-calendar-day variance-swap rate, which sits above ATM vol because
-of the put skew: sigma_atm = VIX9D / atm_ratio.  VolVue data give a median
-VIX9D / ATM10 ratio of 1.17 (2011-2026, stable across years and vol regimes).
+Default: VolVue SPXW 10-day ATM implied vol (see volvue.py), converted to
+business time over the exact 10-calendar-day window, then scaled to the
+option's own tenor with a short-end factor from VIX1D / VIX9D (backtest.py).
+Proxy: VIX9D / atm_ratio (VolVue median VIX9D / ATM10 = 1.17, 2011-2026).
 
 Variance clock
 --------------
@@ -45,8 +45,10 @@ def npdf(x):
 
 @dataclass(frozen=True)
 class SmileParams:
-    call10: float = 0.92   # 10-delta call vol / ATM vol
-    call1: float = 1.02    # 1-delta call vol / ATM vol
+    # call-wing anchors fitted to the CBOE SPXW chain, 2026-09-22 close, 2-5DTE
+    # (v1 of this backtest assumed 0.92 / 1.02)
+    call10: float = 1.01   # 10-delta call vol / ATM vol
+    call1: float = 1.16    # 1-delta call vol / ATM vol
     put10: float = 1.30    # 10-delta put vol / ATM vol (only used for ITM calls)
     atm_ratio: float = 1.17  # VIX9D / ATM vol (VolVue median 2011-26), proxy mode only
     z_cap: float = 4.0     # smile is flat beyond |z| > z_cap
@@ -70,10 +72,13 @@ class Smile:
         b = np.where(z >= 0, self.bc, self.bp)
         return np.maximum(1.0 + self.a * z + b * z * z, self.p.floor)
 
-    def vol(self, K, F, sig_atm, T):
+    def vol(self, K, F, sig_atm, T, wing_mult=1.0):
+        """Smile vol.  `wing_mult` rescales call-wing vols: ramps from 1 at ATM to
+        `wing_mult` at the 10-delta point (z = 1.28) and beyond."""
         s = sig_atm * np.sqrt(T)
         z = np.log(K / F) / s
-        return sig_atm * self.f(z)
+        ramp = np.clip(z / 1.2816, 0.0, 1.0)
+        return sig_atm * self.f(z) * (1.0 + (wing_mult - 1.0) * ramp)
 
     def strike_for_delta(self, delta, F, sig_atm, T, iters: int = 60):
         """Call strike whose BS delta (at its own smile vol) equals `delta`."""
@@ -92,6 +97,13 @@ class Smile:
         return F * np.exp(z * s)
 
 
+def bs_gamma(F, K, sig, T):
+    T = np.maximum(T, 1e-10)
+    st = sig * np.sqrt(T)
+    d1 = (np.log(F / K) + 0.5 * st * st) / st
+    return npdf(d1) / (F * st)
+
+
 def bs_call(F, K, sig, T):
     """Undiscounted Black call price, delta, vega (per 1.00 vol). Vectorised."""
     T = np.maximum(T, 1e-10)
@@ -105,7 +117,8 @@ def bs_call(F, K, sig, T):
 @dataclass(frozen=True)
 class ClockParams:
     f_on: float = 0.20     # overnight share of a trading day's variance (SPX 2017-26: ~0.22)
-    w_nt: float = 0.10     # extra variance per non-trading calendar day (weekend/holiday)
+    w_nt: float = 0.05     # variance per weekend/holiday day, in trading days (SPXW chain fit 0-0.05;
+                           # realised SPX 2011-26: 0.02-0.07)
 
 
 class VarianceClock:
@@ -127,6 +140,13 @@ class VarianceClock:
     def T(self, d: int, u: float, exp_idx):
         """Year fraction (business, /252) from (d,u) to close of exp_idx."""
         return np.maximum(self.cum_close[exp_idx] - self.now(d, u), 0.0) / 252.0
+
+    def window_eff(self, dates, days: int):
+        """Effective trading days in the `days`-calendar-day window after each date."""
+        d0 = np.asarray(dates, dtype="datetime64[D]")
+        ext = np.concatenate([d0, np.busday_offset(d0[-1], np.arange(1, 30), roll="forward")])
+        n_td = np.searchsorted(ext, d0 + days, side="right") - np.searchsorted(ext, d0, side="right")
+        return n_td + self.p.w_nt * (days - n_td)
 
     def cal_to_business(self, vol, days: float):
         """Vol quoted on a calendar clock over `days` calendar days -> business-time vol.

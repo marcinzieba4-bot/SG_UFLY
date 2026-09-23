@@ -129,11 +129,24 @@ drawdown, is what should set the size.
 5. **Watch the wing premium every day.** Run `python validate_chain.py`: it snapshots the CBOE
    SPXW chain and prints market/model bids and the fitted wing (10-delta and 1-delta vol / ATM).
    If the 10-delta call vol falls toward about 0.85 × ATM, the edge roughly halves (Sharpe about 2.8).
-6. **The next real validation step is historical SPXW end-of-day quotes** (CBOE DataShop,
+   Log so far (tilted strip, premium at real bids vs model bids):
+
+   | Close | SPX | 10d / 1d call vol vs ATM (fit) | Real / model premium | Premium per daily roll at 1x |
+   |---|---:|---|---:|---:|
+   | 2026-09-22 | 7,765 | 1.01 / 1.16 | 0.98 | 3.1 bp of NAV |
+   | 2026-09-23 | 7,706 (−0.75%) | 0.96 / 1.10 | **0.77** | 3.4 bp of NAV |
+
+   One down day was enough to cheapen the 4–5DTE wing by about 25% relative to the model, while
+   ATM still matched. The wing premium moves day to day, which the backtest's static wing ignores.
+   Real 5–10-delta spreads were about 6% of mid, in line with the modelled 3% half-spread.
+6. **Contract size.** An SPX contract is about $770k notional. At 1x NAV per daily roll with the
+   tilted 40-strike strip, you need about $50m NAV for 1–3 contracts per strike. Smaller accounts
+   need XSP (1/10 size) or fewer strikes (e.g. 5, 7 and 10 delta only).
+7. **The next real validation step is historical SPXW end-of-day quotes** (CBOE DataShop,
    OptionMetrics, ORATS), to replace the modelled surface for 2011–2026. Until then, treat
    Sharpe 6 as an upper bound, and the stress-pricing case (3.8) as a more realistic but still
    pre-cost-of-tail figure.
-7. **A gap hedge is worth testing next.** Buying further-OTM calls against the short strip
+8. **A gap hedge is worth testing next.** Buying further-OTM calls against the short strip
    (a call spread, or an upside "fly") caps the overnight-gap loss. It costs part of the premium,
    because the far wing is expensive (1-delta at 1.16 × ATM, and more below 1 delta).
 
@@ -176,6 +189,7 @@ pip install -r requirements.txt
 export VOLVUE_API_KEY=...            # VolVue ATM vols (falls back to the VIX9D proxy)
 python run_backtest.py               # downloads data to ./data on first run, writes ./results
 python validate_chain.py             # today's CBOE SPXW chain vs the model (saved to data/chains/)
+python validate_chain.py --source yahoo   # same check from Yahoo's closing quotes (if the CBOE CDN is stale)
 python validate_chain.py --file data/chains/spx_YYYY-MM-DD.json --calibrate
 ```
 

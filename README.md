@@ -144,37 +144,61 @@ The largest SPX overnight up-gaps since 2017 were +4.8%, +3.6% and +3.0%, all in
 
 ## Retail implementation (`run_retail.py`, [`results/RETAIL.md`](results/RETAIL.md))
 
-**Futures can't emulate the short calls.** Holding minus the strip's delta in futures gives the
-option's payoff shape but collects no premium. Only the option seller is paid the implied vol.
-Tested hourly over 2011–2026: **Sharpe −1.2, −6%/yr, −65% max drawdown** (Jun 2023 onward: −1.8),
-against +1.5 for the real options. It amounts to a small, dynamic short SPX position that loses
-the market's drift. Futures are the right *hedging* instrument, not a source of the premium.
-ES/MES trade almost 24h, which also lets you hedge overnight moves that hourly cash-session
-hedging misses.
+**1. Futures can't emulate the short calls.** Holding minus the strip's delta in futures gives
+the option's payoff shape but collects no premium. Only the option seller is paid the implied vol.
+Hourly, 2011–2026: **Sharpe −1.2, −6%/yr, −65% max drawdown** (Jun 2023 onward: −1.8).
 
-**Spreads on real quotes, 5–10-delta calls at 2–5DTE (2026-09-25 close):**
+**2. Selling a cheaper-to-trade XSP option and delta-hedging** earns that option's own premium.
+Hedging only matches delta; it can't recreate the 5–10-delta gamma profile or its mispricing.
+So the question becomes which XSP options are both cheap to trade *and* overpriced.
 
-| Product | Contract notional | Half-spread (% of premium) | Cost (bp of notional) | Volume per strike |
-|---|---:|---:|---:|---|
-| SPXW | about $774k | 4% | 0.13 | hundreds to thousands |
-| XSP (1/10) | about $77k | 20% | 0.84 | single digits to hundreds |
+*Where XSP is cheap to trade* (median half-spread as % of premium, closing quotes 2026-09-25):
 
-With a real-price edge of about 1.4 bp of notional per trade, crossing XSP spreads gives up
-about 60% of it. Working limit orders near mid recovers most of that. On rich-wing days the gross
-edge is about 3x larger, so spreads matter much less.
+| Days to expiry | 1–3d | 3–7d | 7–12d | 12–20d | 20–30d | 30–45d | ATM |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 4–5 | 33 | 26 | 18 | 9 | 6.5 | 2.7 | 2.6 |
+| 6–10 | 29 | 18 | 12 | 7 | 4.5 | 2.7 | 2.8 |
+| 11–32 | 62–66 | 30–32 | 17–20 | 12–13 | 7–9 | 5 | 3–4.5 |
 
-| Jun 2023 – Sep 2026 (real wing), Sharpe | SPXW costs | XSP, limit orders | XSP, crossing |
-|---|---:|---:|---:|
-| Tilted (5–10-delta), every day | 1.44 | 1.18 | 0.73 |
-| Low-delta (1–5-delta), every day | 1.95 | 1.74 | 1.35 |
-| **Low-delta, rich-wing days only** | 2.27 | **2.13** | 1.88 |
+(XSP beyond 10 days barely trades. SPXW is 1–7% everywhere except below 3 delta.)
 
-**Retail recipe:** XSP (or SPXW once the account allows), 1–5-delta calls at 4–5DTE, sold
-**only on rich-wing days** (`validate_chain.py --source barchart`), with limit orders at or near
-mid, and hedged hourly with SPY shares (fractional, penny-wide) or MES futures. Size from the gap
-stress, not from vol. Naked index calls need options approval and heavy Reg-T margin (roughly
-15–20% of notional per contract); portfolio margin, or selling call spreads (long a further-OTM
-call), makes it workable and caps the gap loss.
+*Where the premium is:* real SPXW prices (Barchart, 2023–26) put the 12–45-delta and ATM calls at
+5–10 days within 1–4% of the calibrated model's vol. Sold at mid and hedged daily, they earned about
+4–14 bp of notional per trade, far more than their XSP spread (about 1–1.5 bp).
+
+*Full engine, crossing the real XSP spread, Sharpe* (risk scaled to 5% vol):
+
+| Construction | 2011–26, hourly / 3x a day / daily | Jun 2023+, hourly / 3x / daily | XSP cost / premium | +5% calm gap at 5% vol |
+|---|---|---|---:|---:|
+| Far-OTM 5–10-delta strip (original design) | 0.54 / 0.28 / −0.45 | 0.62 / 0.06 / −0.41 | 27% | −22% to −25% |
+| Far-OTM 1–5-delta strip | 0.73 / 0.47 / −0.13 | 1.10 / 0.51 / −0.08 | 31% | −24% to −37% |
+| 20–30-delta calls, 5 days | 1.41 / 0.95 / −0.53 | 0.49 / 0.21 / −0.39 | 9% | −10% to −11% |
+| **20–30-delta calls, 10 days** | **1.76 / 1.39 / 0.40** | **1.25 / 1.01 / 0.38** | **5.5%** | **−9% to −11%** |
+| 30–45-delta calls, 10 days | 1.80 / 1.37 / 0.13 | 0.93 / 0.69 / 0.02 | 3.5% | −6% to −7% |
+| ATM calls, 5 days | 1.85 / 1.21 / −0.55 | 0.44 / 0.38 / −0.36 | 4% | −5.5% |
+
+At retail XSP costs, the far-OTM strip loses a quarter to a third of its premium to the spread,
+and it carries 2–3x the upside-gap risk per unit of vol. **Selling 20–30-delta XSP calls with
+about 10 days to expiry is the most robust retail version.** It's cheap to execute, holds up in
+both periods, works with hedging three times a day, and has a smaller tail. It harvests the
+near-the-money short-dated vol premium, not the far-OTM anomaly itself.
+
+**Retail playbook (IBKR, Saxo or any broker with XSP options and MES futures):**
+
+| Item | Rule |
+|---|---|
+| Instrument | XSP calls: cash-settled, European, no early assignment, about $77k notional per contract |
+| What to sell | About 25-delta calls (20–30), about 10 trading days to expiry (roughly 1.7–1.9% OTM), held to expiry |
+| How much (5% vol target) | About 0.4x NAV of notional per day, about 4x NAV short notional outstanding. For a $100k account that's about one XSP call every other day (or 2–3 a week), about 5 contracts open |
+| Hedge | Delta-hedge at least 3x a day (open, midday, close); hourly is better. Use MES futures (about $39k each, nearly 24h trading, low margin) or SPY shares (fractional, 4am–8pm) |
+| Execution | Limit orders at mid or one tick below; the half-spread is only about 5% of premium here |
+| Expectation | About 5.5–7%/yr at 5% vol (Sharpe about 1.0–1.4), max drawdown about −5% to −7% |
+| Tail | An instant +8% move costs about 15–17% of NAV, +12% about 26–29%, −10% about 8–9% |
+| Margin | Naked index calls need options approval and roughly 15% of notional per contract under Reg-T (about $50k for 5 open XSP calls). Portfolio margin (IBKR from about $110k), or a long far-OTM call as a wing, cuts it and caps the tail |
+| Automation | Hedging 3x or more a day is realistic only when automated (IBKR API via `ib_async`, or Saxo OpenAPI) |
+
+Section 2 of RETAIL.md used simpler flat cost assumptions and is superseded by section 4, the real
+XSP spread model: half-spread = min(0.10 + 20% × mid, 0.70 + 1.2% × mid) SPX points.
 
 ## Pricing model (v3)
 
@@ -221,7 +245,8 @@ python validate_history.py --wing-mult 1.0      # real Barchart history vs the u
 python validate_history.py --tag _calibrated    # ... vs the calibrated model (wing x0.82)
 python validate_history.py --targets 0.5 --core 0.3,0.7 --tag _atm   # ATM check
 python run_barchart_window.py                   # Jun-2023+ backtest with the real wing level and filter
-python run_retail.py                            # futures-only emulation test + retail (XSP) execution costs
+python run_retail.py                            # futures-only test, XSP spread map, tenor x delta edge, retail engine runs
+python validate_history.py --sale-dte 10 --targets 0.05,0.10,0.20,0.30 --step 10 --half-spread 0 --tag _t10
 ```
 
 Code: `ufly/` holds data, volvue, barchart, vol, paths, backtest and metrics.

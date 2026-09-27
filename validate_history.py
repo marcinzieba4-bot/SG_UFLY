@@ -37,15 +37,16 @@ TARGETS = (0.05, 0.075, 0.10)
 DIV_YIELD = 0.013
 
 
-def build_sample(daily: pd.DataFrame, cfg: Config, step: int, start: str = "2023-06-05", targets=TARGETS):
+def build_sample(daily: pd.DataFrame, cfg: Config, step: int, start: str = "2023-06-05", targets=TARGETS,
+                 sale_dte: int = 5):
     dates = daily.index
     clock = VarianceClock(dates.values, cfg.clock)
     _, sig_close, rho, eff10 = atm_vols(daily, cfg, clock)
     smile = Smile(cfg.smile)
     first = int(np.searchsorted(dates, pd.Timestamp(start)))
     rows = []
-    for ie in range(first + 5, len(dates), step):
-        d = ie - 5
+    for ie in range(first + sale_dte, len(dates), step):
+        d = ie - sale_dte
         S, T = float(daily.spx_close.iloc[d]), float(clock.T(d, 1.0, ie))
         a = sig_close[d] * cfg.atm_mult * float(short_end_factor(T, rho[d], eff10[d])[0])
         K = np.round(smile.strike_for_delta(np.array(targets), S, a, T) / cfg.strike_step) * cfg.strike_step
@@ -55,7 +56,8 @@ def build_sample(daily: pd.DataFrame, cfg: Config, step: int, start: str = "2023
     return pd.DataFrame(rows).drop_duplicates("symbol"), clock, sig_close, rho, eff10, smile
 
 
-def real_price_pnl(o: pd.DataFrame, sample: pd.DataFrame, daily: pd.DataFrame, clock, half_spread=0.03):
+def real_price_pnl(o: pd.DataFrame, sample: pd.DataFrame, daily: pd.DataFrame, clock, half_spread=0.03,
+                   min_half=0.025):
     """Sell each sampled contract at its real 5DTE close (less half-spread), hedge the
     delta at each daily close, hold to expiry.  Same trades priced by the model for
     comparison.  P&L in bp of the notional (SPX level at sale)."""
@@ -68,7 +70,9 @@ def real_price_pnl(o: pd.DataFrame, sample: pd.DataFrame, daily: pd.DataFrame, c
         first = obs.loc[(c.expiry, c.K, d0)]
         S0 = float(daily.spx_close.iloc[c.d0])
         payoff = max(float(daily.spx_close.iloc[c.ie]) - c.K, 0.0)
-        res = {"expiry": c.expiry, "target": c.target, "atm": first.atm}
+        T0 = float(clock.T(c.d0, 1.0, c.ie))
+        res = {"expiry": c.expiry, "target": c.target, "atm": first.atm, "sale_dte": c.ie - c.d0,
+               "delta_real0": float(bs_call(S0, c.K, first.iv_mkt, T0)[1])}
         for kind, px0, iv0 in (("real", first.market, first.iv_mkt), ("model", first.model, first.iv_mod)):
             hedge = 0.0
             for t in range(c.d0, c.ie):
@@ -81,7 +85,7 @@ def real_price_pnl(o: pd.DataFrame, sample: pd.DataFrame, daily: pd.DataFrame, c
                 else:
                     iv = iv0
                 hedge += float(bs_call(S, c.K, iv, T)[1]) * (S1 - S)
-            prem = px0 - max(0.025, half_spread * px0)
+            prem = px0 - max(min_half, half_spread * px0)
             res[f"pnl_{kind}_bp"] = 1e4 * (prem - payoff + hedge) / S0
             res[f"prem_{kind}_bp"] = 1e4 * prem / S0
         res["payoff_bp"] = 1e4 * payoff / S0
@@ -98,6 +102,8 @@ def main():
     ap.add_argument("--tag", default="", help="suffix for the output files")
     ap.add_argument("--targets", default="0.05,0.075,0.10", help="deltas of the sampled strikes at 5DTE (0.5 = ATM)")
     ap.add_argument("--core", default="0.03,0.12", help="model-delta range for the headline statistics")
+    ap.add_argument("--sale-dte", type=int, default=5, help="trading days to expiry at the sale")
+    ap.add_argument("--half-spread", type=float, default=0.03, help="half-spread paid in the mini-backtest (0 = at mid)")
     args = ap.parse_args()
     OUT.mkdir(exist_ok=True)
 
@@ -105,7 +111,8 @@ def main():
     cfg = Config(wing_mult=1.0)   # strike selection fixed to the chain-calibrated model (cached contract set)
     targets = tuple(float(x) for x in args.targets.split(","))
     lo, hi = (float(x) for x in args.core.split(","))
-    sample, clock, sig_close, rho, eff10, smile = build_sample(daily, cfg, args.step, targets=targets)
+    sample, clock, sig_close, rho, eff10, smile = build_sample(daily, cfg, args.step, targets=targets,
+                                                               sale_dte=args.sale_dte)
     wmult = lambda t: args.wing_mult * np.exp(args.wing_beta * (sig_close[t] - 0.12))
     hist = fetch_history(sample.symbol.tolist(), DATA_DIR / "barchart_hist")
 
@@ -190,7 +197,8 @@ def main():
         ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout(); fig.savefig(OUT / f"history_check{args.tag}.png", dpi=150); plt.close(fig)
 
-    pnl = real_price_pnl(o, sample, daily, clock)
+    pnl = real_price_pnl(o, sample, daily, clock, half_spread=args.half_spread,
+                         min_half=0.025 if args.half_spread > 0 else 0.0)
     per_exp = pnl.groupby("expiry")[["pnl_real_bp", "pnl_model_bp"]].sum()
     ann = np.sqrt(252 / args.step)
     pnl_tab = pd.DataFrame({

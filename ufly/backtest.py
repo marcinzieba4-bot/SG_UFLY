@@ -45,11 +45,13 @@ class Config:
     leverage: float = 1.0
     roll: str = "daily"            # daily | weekly
     listed_only: bool = False      # only sell expiries SPX actually listed at the time
-    hedge: str = "hourly"          # hourly | daily | none
+    hedge: str = "hourly"          # hourly | 3x (open, midday, close) | daily | none
     strike_step: float = 5.0
     min_bid: float = 0.05
     tc_opt_min: float = 0.025      # min half-spread paid on option sale (index pts)
     tc_opt_pct: float = 0.03       # half-spread as fraction of mid
+    tc_model: str = "pct"          # pct: max(tc_opt_min, tc_opt_pct x mid) | xsp: real XSP quotes (see half_spread)
+    tc_scale: float = 1.0          # scales the xsp half-spread (0.5 ~ working limit orders near mid)
     tc_hedge_pts: float = 0.15     # ES half-spread + fees, index pts per unit traded
     atm_source: str = "volvue_w"   # volvue_w (SPXW 10d; SPX before 2014-04) | volvue (SPX monthly root) | vix9d
     short_end: bool = True         # scale 10d ATM to the option's tenor with VIX1D / VIX9D
@@ -80,6 +82,16 @@ class Result:
     daily: pd.DataFrame      # per-day NAV + P&L attribution
     intraday: pd.Series      # NAV at every mark
     trades: pd.DataFrame     # one row per option sold (real and, in replica mode, virtual)
+
+
+def half_spread(mid, cfg: Config):
+    """Half-spread paid when selling, in SPX points.  'xsp' is fitted to XSP closing quotes
+    (2026-09-25, 1-10DTE calls, SPX-point equivalents): about 0.15-0.3 for 1-3 delta,
+    0.6-0.75 for 3-12 delta, 0.85-1.0 for 12-45 delta, 1.1-1.5 at the money."""
+    mid = np.asarray(mid, dtype=float)
+    if cfg.tc_model == "xsp":
+        return cfg.tc_scale * np.minimum(0.10 + 0.20 * mid, 0.70 + 0.012 * mid)
+    return np.maximum(cfg.tc_opt_min, cfg.tc_opt_pct * mid)
 
 
 def listed_expiries(dates: pd.DatetimeIndex) -> np.ndarray:
@@ -274,7 +286,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
                                        np.ceil(S / cfg.strike_step) * cfg.strike_step)
                         iv = smile.vol(K, S, a, T, wm[d])
                         mid, dl, _ = bs_call(S, K, iv, T)
-                        hs = np.maximum(cfg.tc_opt_min, cfg.tc_opt_pct * mid)
+                        hs = half_spread(mid, cfg)
                         bid = mid - hs
                         ok = bid >= cfg.min_bid
                         q = w * cfg.leverage * nav / S * dw[ok]
@@ -300,7 +312,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
                     K = np.array([np.ceil(S / cfg.strike_step) * cfg.strike_step])
                     iv = smile.vol(K, S, a, T, wm[d])
                     mid, dl, _ = bs_call(S, K, iv, T)
-                    hs = np.maximum(cfg.tc_opt_min, cfg.tc_opt_pct * mid)
+                    hs = half_spread(mid, cfg)
                     q = g_target / float(bs_gamma(S, K, iv, T)[0])
                     idx = add(K, mid, mid - hs, iv, dl, q, S, a, d, e, cfg.replica_dte, np.array([0.5]), True)
                     prem_mid += q * float(mid[0])
@@ -317,7 +329,8 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
             else:
                 pos_delta = np.zeros(0)
                 liab = 0.0
-            do_hedge = cfg.hedge == "hourly" or (cfg.hedge == "daily" and is_close)
+            do_hedge = (cfg.hedge == "hourly" or (cfg.hedge == "daily" and is_close)
+                        or (cfg.hedge == "3x" and i in (0, nmk // 2, nmk - 1)))
             if do_hedge:
                 target = float(pos_delta.sum())
                 c = abs(target - h) * cfg.tc_hedge_pts

@@ -142,6 +142,40 @@ The largest SPX overnight up-gaps since 2017 were +4.8%, +3.6% and +3.0%, all in
    license historical data (Barchart OnDemand, CBOE DataShop, OptionMetrics or ORATS) rather
    than reading the public website.
 
+## Retail implementation (`run_retail.py`, [`results/RETAIL.md`](results/RETAIL.md))
+
+**Futures can't emulate the short calls.** Holding minus the strip's delta in futures gives the
+option's payoff shape but collects no premium. Only the option seller is paid the implied vol.
+Tested hourly over 2011–2026: **Sharpe −1.2, −6%/yr, −65% max drawdown** (Jun 2023 onward: −1.8),
+against +1.5 for the real options. It amounts to a small, dynamic short SPX position that loses
+the market's drift. Futures are the right *hedging* instrument, not a source of the premium.
+ES/MES trade almost 24h, which also lets you hedge overnight moves that hourly cash-session
+hedging misses.
+
+**Spreads on real quotes, 5–10-delta calls at 2–5DTE (2026-09-25 close):**
+
+| Product | Contract notional | Half-spread (% of premium) | Cost (bp of notional) | Volume per strike |
+|---|---:|---:|---:|---|
+| SPXW | about $774k | 4% | 0.13 | hundreds to thousands |
+| XSP (1/10) | about $77k | 20% | 0.84 | single digits to hundreds |
+
+With a real-price edge of about 1.4 bp of notional per trade, crossing XSP spreads gives up
+about 60% of it. Working limit orders near mid recovers most of that. On rich-wing days the gross
+edge is about 3x larger, so spreads matter much less.
+
+| Jun 2023 – Sep 2026 (real wing), Sharpe | SPXW costs | XSP, limit orders | XSP, crossing |
+|---|---:|---:|---:|
+| Tilted (5–10-delta), every day | 1.44 | 1.18 | 0.73 |
+| Low-delta (1–5-delta), every day | 1.95 | 1.74 | 1.35 |
+| **Low-delta, rich-wing days only** | 2.27 | **2.13** | 1.88 |
+
+**Retail recipe:** XSP (or SPXW once the account allows), 1–5-delta calls at 4–5DTE, sold
+**only on rich-wing days** (`validate_chain.py --source barchart`), with limit orders at or near
+mid, and hedged hourly with SPY shares (fractional, penny-wide) or MES futures. Size from the gap
+stress, not from vol. Naked index calls need options approval and heavy Reg-T margin (roughly
+15–20% of notional per contract); portfolio margin, or selling call spreads (long a further-OTM
+call), makes it workable and caps the gap loss.
+
 ## Pricing model (v3)
 
 | Component | Implementation |
@@ -187,7 +221,8 @@ python validate_history.py --wing-mult 1.0      # real Barchart history vs the u
 python validate_history.py --tag _calibrated    # ... vs the calibrated model (wing x0.82)
 python validate_history.py --targets 0.5 --core 0.3,0.7 --tag _atm   # ATM check
 python run_barchart_window.py                   # Jun-2023+ backtest with the real wing level and filter
+python run_retail.py                            # futures-only emulation test + retail (XSP) execution costs
 ```
 
 Code: `ufly/` holds data, volvue, barchart, vol, paths, backtest and metrics.
-`run_backtest.py`, `run_barchart_window.py`, `validate_chain.py` and `validate_history.py` are the entry points.
+`run_backtest.py`, `run_barchart_window.py`, `run_retail.py`, `validate_chain.py` and `validate_history.py` are the entry points.

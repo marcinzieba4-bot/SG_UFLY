@@ -200,6 +200,13 @@ near-the-money short-dated vol premium, not the far-OTM anomaly itself.
 Section 2 of RETAIL.md used simpler flat cost assumptions and is superseded by section 4, the real
 XSP spread model: half-spread = min(0.10 + 20% × mid, 0.70 + 1.2% × mid) SPX points.
 
+**No richness signal for retail** (`run_retail_signal.py`, [`results/RETAIL_SIGNAL.md`](results/RETAIL_SIGNAL.md)).
+On Jun 2023 – Sep 2026, selling every day (Sharpe 1.01) beat every signal-timed version: the far-wing
+signal (Sharpe 0.1–0.7 across thresholds of 0.80–0.90), a signal measured on the 20–30 delta calls themselves (0.3–0.6), and
+either measure relative to its own 6-month median (about 0.65). In real 20–30 delta trades the
+"cheap" tercile earned the most. The richness effect lives in the far wing, not in the strikes
+retail can trade cheaply.
+
 ## Pricing model (v3)
 
 | Component | Implementation |
@@ -247,7 +254,9 @@ python validate_history.py --targets 0.5 --core 0.3,0.7 --tag _atm   # ATM check
 python run_barchart_window.py                   # Jun-2023+ backtest with the real wing level and filter
 python run_retail.py                            # futures-only test, XSP spread map, tenor x delta edge, retail engine runs
 python validate_history.py --sale-dte 10 --targets 0.05,0.10,0.20,0.30 --step 10 --half-spread 0 --tag _t10
+python run_retail_signal.py                     # retail programme with far-wing / retail-zone richness signals
+python make_factsheets.py                       # numbers behind the retail and institutional documents
 ```
 
 Code: `ufly/` holds data, volvue, barchart, vol, paths, backtest and metrics.
-`run_backtest.py`, `run_barchart_window.py`, `run_retail.py`, `validate_chain.py` and `validate_history.py` are the entry points.
+`run_backtest.py`, `run_barchart_window.py`, `run_retail.py`, `run_retail_signal.py`, `make_factsheets.py`, `validate_chain.py` and `validate_history.py` are the entry points.

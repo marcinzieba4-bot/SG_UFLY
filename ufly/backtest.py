@@ -68,6 +68,14 @@ class Config:
     signal_file: str | None = None # CSV (date, level): richness series gating the roll instead of the wing level
     signal_lag: int = 0            # decide on the signal observed this many trading days earlier
     signal_rel: int = 0            # >0: signal relative to its trailing median over this many days (roll_min_wing ~1)
+    # --- small-account mode: whole contracts for an account of `account_usd` (0 = fractional sizing)
+    account_usd: float = 0.0
+    index_ref: float = 0.0         # >0: contract sizes scaled to this index level throughout (today's contract/account ratio)
+    opt_mult: float = 10.0         # $ per index point per option contract (XSP 10, SPX 100)
+    hedge_mult: float = 5.0        # $ per index point per hedge contract (MES 5, ES 50, SPY share ~0.1)
+    opt_fee_usd: float = 0.0       # commission + exchange fees per option contract
+    hedge_fee_usd: float = 0.0     # commission + exchange fees per hedge contract
+    fut_margin_pct: float = 0.07   # futures margin as a fraction of hedge notional (Reg-T margin estimate)
     stress: tuple = (-0.10, -0.05, 0.03, 0.05, 0.08, 0.12)   # instantaneous gap shocks evaluated at each close
     mode: str = "strip"            # strip | replica
     replica_dte: int = 1
@@ -234,10 +242,19 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
     nav0 = 100.0
     cash = nav0
     h = 0.0                              # hedge, units of index (long > 0)
+    whole = cfg.account_usd > 0
+    rng_slots = np.random.default_rng(cfg.seed + 1)
+    acc_slots: dict = {}                 # fractional contracts carried per (dte, delta) slot, small-account mode
+
+    def per_unit(S):
+        """Contracts per engine index unit / option multiplier, small-account mode."""
+        scale = (S / cfg.index_ref) if cfg.index_ref > 0 else 1.0
+        return cfg.account_usd / nav0 * scale
     last_S = marks[0].spot[0]
 
     cols = ["nav", "spot", "prem_mid", "opt_cost", "payoff", "hedge_pnl", "hedge_cost",
-            "liab", "short_notional", "net_delta_units", "n_sold", "n_skipped", "atm_2d", "atm_5d"]
+            "liab", "short_notional", "net_delta_units", "n_sold", "n_skipped", "atm_2d", "atm_5d",
+            "regt_margin", "contracts_sold", "contracts_open", "hedge_contracts"]
     cols += [f"stress_{x:+.0%}" for x in cfg.stress]
     out = np.zeros((N, len(cols)))
     intraday_t, intraday_nav = [], []
@@ -246,6 +263,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
         dm = marks[d]
         prem_mid = opt_cost = payoff_tot = hpnl_tot = hcost_tot = 0.0
         n_sold = n_skip = 0
+        k_sold = 0.0
         nmk = len(dm.u)
         for i in range(nmk):
             u, S = float(dm.u[i]), float(dm.spot[i])
@@ -300,6 +318,25 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
                         ok = bid >= cfg.min_bid
                         q = w * cfg.leverage * nav / S * dw[ok]
                         n_skip += int((~ok).sum())
+                        if whole and not replica and ok.any():
+                            # whole contracts: carry each (dte, delta) slot's fraction forward
+                            pu = per_unit(S) / cfg.opt_mult
+                            n_c = np.zeros(len(q))
+                            for j, slot in enumerate(np.flatnonzero(ok)):
+                                key = (dte, int(slot))
+                                if key not in acc_slots:
+                                    acc_slots[key] = float(rng_slots.random())
+                                acc_slots[key] += q[j] * pu
+                                n_c[j] = np.floor(acc_slots[key])
+                                acc_slots[key] -= n_c[j]
+                            keep = n_c > 0
+                            ok = ok.copy()
+                            ok[np.flatnonzero(ok)[~keep]] = False
+                            q = n_c[keep] / pu
+                            k_sold += float(n_c.sum())
+                            fee = float(n_c.sum()) * cfg.opt_fee_usd / per_unit(S)
+                            opt_cost += fee
+                            cash -= fee
                         n_sold += int(ok.sum())
                         if not ok.any():
                             continue
@@ -342,6 +379,13 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
                         or (cfg.hedge == "3x" and i in (0, nmk // 2, nmk - 1)))
             if do_hedge:
                 target = float(pos_delta.sum())
+                if whole:
+                    hu = per_unit(S) / cfg.hedge_mult
+                    n_new, n_old = np.round(target * hu), np.round(h * hu)
+                    target = n_new / hu
+                    fee = abs(n_new - n_old) * cfg.hedge_fee_usd / per_unit(S)
+                    hcost_tot += fee
+                    cash -= fee
                 c = abs(target - h) * cfg.tc_hedge_pts
                 hcost_tot += c
                 cash -= c
@@ -363,10 +407,21 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
             dv = float(np.sum(R["q"][active] * px2)) - liab
             stress.append(100 * (h * (S2 - S) - dv) / (cash - liab))
         short_notional = float(R["q"][active].sum() * S) if active.size else 0.0
+        # rules-based (Reg-T) margin for naked broad-based index calls + futures margin on the hedge
+        if active.size:
+            otm = np.maximum(R["K"][active] - S, 0.0)
+            px_c = price(active, d, 1.0, S, sig)[0][0]
+            regt = float(np.sum(R["q"][active] * (px_c + np.maximum(0.15 * S - otm, 0.10 * S))))
+        else:
+            regt = 0.0
+        regt += abs(h) * S * cfg.fut_margin_pct
+        pu_d = per_unit(S) if whole else 0.0
+        k_open = float(R["q"][active].sum() * pu_d / cfg.opt_mult) if active.size else 0.0
         a2 = float(atm_for(sig_close[d], d, np.array([2 / 252]))[0])
         a5 = float(atm_for(sig_close[d], d, np.array([5 / 252]))[0])
         out[d] = [cash - liab, S, prem_mid, opt_cost, payoff_tot, hpnl_tot, hcost_tot, liab,
-                  short_notional, h - (pos_delta.sum() if active.size else 0.0), n_sold, n_skip, a2, a5, *stress]
+                  short_notional, h - (pos_delta.sum() if active.size else 0.0), n_sold, n_skip, a2, a5,
+                  regt, k_sold, k_open, abs(h) * pu_d / cfg.hedge_mult, *stress]
 
     daily = pd.DataFrame(out, index=dates, columns=cols)
     daily["ret"] = daily.nav.pct_change().fillna(daily.nav.iloc[0] / nav0 - 1)

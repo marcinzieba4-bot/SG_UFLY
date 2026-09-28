@@ -240,6 +240,24 @@ Fees cost about 0.4% of NAV a year.
   - Futures hedges get no margin offset.
   - It charges a carrying cost on margin (3.5% a year on Classic).
 
+## tastytrade under $100k ([`results/TASTY.md`](results/TASTY.md), [`results/TASTY_MES.md`](results/TASTY_MES.md))
+
+**Why the original doesn't fit.** Naked XSP calls under tastytrade's house margin (25%/15%) need about 95% of NAV (113% at the 95th percentile), because MES hedges held in the separate futures account don't offset them.
+
+**Use Micro E-mini S&P options instead.** Sell the same 20–30 delta calls about 10 days out in Micro E-mini options: the new cash-settled European weeklies launched June 2026, $5 × index. Hedge with MES in the same futures account.
+- **Margin:** the calls and the hedge are margined together (SPAN), about 10–15% of NAV.
+- **Trading costs:** with costs 1.5× the fitted quote model, Sharpe is about 1.2 at $50–75k and 0.8 at $25k (max drawdown −23%).
+- **If costs are 2× (early quotes):** Sharpe 0.65–0.9.
+- **Minimum account:** about $50k.
+
+**Hedge with SPY shares instead of MES.** Finer steps give Sharpe 1.2–1.4 even at $25–75k. But SPY sits in the securities account at 50% margin, with no netting: about 60% of NAV typical and up to 140% in stressed periods. So run it at a lower budget or keep a cash buffer.
+
+**Rejected.** Call spreads (XSP or Micro): buying the far wing gives back the edge, leaving Sharpe 0.3–0.7.
+
+**Check first:**
+- that tastytrade nets cash-settled Micro options against MES
+- real spreads during regular trading hours
+
 ## Pricing model (v3)
 
 | Component | Implementation |

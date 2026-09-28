@@ -50,7 +50,7 @@ class Config:
     min_bid: float = 0.05
     tc_opt_min: float = 0.025      # min half-spread paid on option sale (index pts)
     tc_opt_pct: float = 0.03       # half-spread as fraction of mid
-    tc_model: str = "pct"          # pct: max(tc_opt_min, tc_opt_pct x mid) | xsp: real XSP quotes (see half_spread)
+    tc_model: str = "pct"          # pct: max(tc_opt_min, tc_opt_pct x mid) | xsp: real XSP quotes | mes: Micro E-mini options
     tc_scale: float = 1.0          # scales the xsp half-spread (0.5 ~ working limit orders near mid)
     tc_hedge_pts: float = 0.15     # ES half-spread + fees, index pts per unit traded
     atm_source: str = "volvue_w"   # volvue_w (SPXW 10d; SPX before 2014-04) | volvue (SPX monthly root) | vix9d
@@ -75,7 +75,12 @@ class Config:
     hedge_mult: float = 5.0        # $ per index point per hedge contract (MES 5, ES 50, SPY share ~0.1)
     opt_fee_usd: float = 0.0       # commission + exchange fees per option contract
     hedge_fee_usd: float = 0.0     # commission + exchange fees per hedge contract
-    fut_margin_pct: float = 0.07   # futures margin as a fraction of hedge notional (Reg-T margin estimate)
+    fut_margin_pct: float = 0.07   # hedge margin as a fraction of hedge notional (MES ~0.07, SPY shares 0.5)
+    naked_hi: float = 0.15         # naked index call margin: premium + max(hi x S - OTM, lo x S)
+    naked_lo: float = 0.10         # (Cboe minimum 15%/10%; tastytrade house rule 25%/15%)
+    # --- call spreads: buy a wing at this delta (same expiry, same size) for every call sold
+    wing_delta: float = 0.0
+    wing_buy_mult: float = 1.08    # real wings trade ~6-10% above the model at 7-10DTE (validate_history _t10)
     stress: tuple = (-0.10, -0.05, 0.03, 0.05, 0.08, 0.12)   # instantaneous gap shocks evaluated at each close
     mode: str = "strip"            # strip | replica
     replica_dte: int = 1
@@ -102,6 +107,8 @@ def half_spread(mid, cfg: Config):
     mid = np.asarray(mid, dtype=float)
     if cfg.tc_model == "xsp":
         return cfg.tc_scale * np.minimum(0.10 + 0.20 * mid, 0.70 + 0.012 * mid)
+    if cfg.tc_model == "mes":   # Micro E-mini S&P options, 9-day weekly quotes (Barchart, 2026-09-28, pre-market)
+        return cfg.tc_scale * np.minimum(0.30 + 0.02 * mid, 0.80)
     return np.maximum(cfg.tc_opt_min, cfg.tc_opt_pct * mid)
 
 
@@ -214,8 +221,9 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
     dw = np.ones(len(deltas)) if cfg.delta_weights is None else np.asarray(cfg.delta_weights, float)
     dw = dw / dw.sum()
     cap = N * (len(cfg.dtes) * len(deltas) + 1)
+    cap *= 2 if cfg.wing_delta > 0 else 1
     R = {k: np.zeros(cap) for k in ("K", "q", "mid", "bid", "iv", "delta0", "spot0",
-                                     "hunits", "hpnl", "payoff", "sig_atm")}
+                                     "hunits", "hpnl", "payoff", "sig_atm", "width")}
     Ri = {k: np.zeros(cap, int) for k in ("d0", "exp", "dte")}
     Rt = np.zeros(cap)                   # target delta
     Rreal = np.zeros(cap, bool)
@@ -349,6 +357,27 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
                             opt_cost += float(q @ hs[ok])
                             cash += float(q @ bid[ok])
                             active = np.concatenate([active, idx])
+                            if cfg.wing_delta > 0:
+                                # long wing, same expiry and size: a call credit spread per short strike
+                                Kw = float(smile.strike_for_delta(np.array([cfg.wing_delta]), S, a, T, wm[d])[0])
+                                Kw = np.ceil(Kw / cfg.strike_step) * cfg.strike_step
+                                Kw = np.maximum(Kw, K[ok] + cfg.strike_step)
+                                ivw = smile.vol(Kw, S, a, T, wm[d])
+                                midw, dlw, _ = bs_call(S, Kw, ivw, T)
+                                hsw = half_spread(midw, cfg)
+                                askw = midw * cfg.wing_buy_mult + hsw
+                                R["width"][idx] = Kw - K[ok]
+                                widx = add(Kw, midw, askw, ivw, dlw, -q, S, a, d, e, dte,
+                                           np.full(len(q), cfg.wing_delta), True)
+                                prem_mid -= float(q @ midw)
+                                opt_cost += float(q @ (askw - midw))
+                                cash -= float(q @ askw)
+                                active = np.concatenate([active, widx])
+                                if whole:
+                                    fee = float(np.sum(q * pu)) * cfg.opt_fee_usd * nav0 / cfg.account_usd
+                                    opt_cost += fee
+                                    fee_tot += fee
+                                    cash -= fee
                 # --- replica: sell ATM calls matching the virtual strip's dollar gamma
                 if replica and virt.size and d + cfg.replica_dte < N:
                     (px_v, _, _), iv_v, T_v = price(virt, d, 1.0, S, sig)
@@ -408,17 +437,20 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
             px2 = price(active, d, 1.0, S2, sig2)[0][0]
             dv = float(np.sum(R["q"][active] * px2)) - liab
             stress.append(100 * (h * (S2 - S) - dv) / (cash - liab))
-        short_notional = float(R["q"][active].sum() * S) if active.size else 0.0
-        # rules-based (Reg-T) margin for naked broad-based index calls + futures margin on the hedge
+        short_notional = float(np.clip(R["q"][active], 0, None).sum() * S) if active.size else 0.0
+        # rules-based (Reg-T) margin: naked broad-based index calls, or the width of a call spread,
+        # plus margin on the hedge
         if active.size:
+            qa, wa = R["q"][active], R["width"][active]
             otm = np.maximum(R["K"][active] - S, 0.0)
             px_c = price(active, d, 1.0, S, sig)[0][0]
-            regt = float(np.sum(R["q"][active] * (px_c + np.maximum(0.15 * S - otm, 0.10 * S))))
+            naked = px_c + np.maximum(cfg.naked_hi * S - otm, cfg.naked_lo * S)
+            regt = float(np.sum(np.where(qa > 0, qa * np.where(wa > 0, wa, naked), 0.0)))
         else:
             regt = 0.0
         regt += abs(h) * S * cfg.fut_margin_pct
         pu_d = per_unit(S) if whole else 0.0
-        k_open = float(R["q"][active].sum() * pu_d / cfg.opt_mult) if active.size else 0.0
+        k_open = float(np.clip(R["q"][active], 0, None).sum() * pu_d / cfg.opt_mult) if active.size else 0.0
         a2 = float(atm_for(sig_close[d], d, np.array([2 / 252]))[0])
         a5 = float(atm_for(sig_close[d], d, np.array([5 / 252]))[0])
         out[d] = [cash - liab, S, prem_mid, opt_cost, payoff_tot, hpnl_tot, hcost_tot, liab,
@@ -433,7 +465,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
         "date": dates[Ri["d0"][:n]], "expiry": dates[Ri["exp"][:n]], "dte": Ri["dte"][:n],
         "target_delta": Rt[:n], "K": R["K"][:n], "spot0": R["spot0"][:n], "q": R["q"][:n],
         "mid": R["mid"][:n], "bid": R["bid"][:n], "iv": R["iv"][:n], "sig_atm": R["sig_atm"][:n],
-        "delta0": R["delta0"][:n], "payoff_unit": R["payoff"][:n] / np.where(R["q"][:n] > 0, R["q"][:n], 1),
+        "delta0": R["delta0"][:n], "payoff_unit": R["payoff"][:n] / np.where(R["q"][:n] != 0, R["q"][:n], 1),
         "hedge_pnl": R["hpnl"][:n], "real": Rreal[:n],
     })
     trades["S_T"] = mkt.spx_close.values[Ri["exp"][:n]]

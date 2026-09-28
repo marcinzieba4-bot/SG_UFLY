@@ -61,6 +61,7 @@ def job(args):
         "Reg-T margin % NAV (median)": 100 * regt.median(), "Reg-T margin % NAV (95th)": 100 * regt.quantile(0.95),
         "PM estimate % NAV (median)": 100 * pm.median(), "PM estimate % NAV (95th)": 100 * pm.quantile(0.95),
         "+5% gap, calm % NAV": calm["stress_+5%"].median(),
+        "Fees % NAV/yr": 100 * 252 * (r.fees / r.nav.shift(1).fillna(100.0)).mean(),
     }
 
 

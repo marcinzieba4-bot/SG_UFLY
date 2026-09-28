@@ -240,6 +240,22 @@ Fees cost about 0.4% of NAV a year.
   - Futures hedges get no margin offset.
   - It charges a carrying cost on margin (3.5% a year on Classic).
 
+## Summary by broker and size ([`results/SUMMARY.md`](results/SUMMARY.md), `run_summary.py`)
+
+Calmar ratio, 2011–2026, median of 3 rounding seeds, broker-specific fees:
+
+| Account | IBKR (XSP + MES) | tastytrade (Micro E-mini + MES) | GS 2.5% budget | GS 5% budget |
+|---|---|---|---|---|
+| $25k | 0.31 | 0.29 | | |
+| $50k | 0.56 | 0.40 | | |
+| $100k | 0.67 | 0.71 | | |
+| $250k | 0.92 | 0.86 | | |
+| $1m | 0.87 | | 0.72 | 0.92 |
+| $2m | | | 0.90 | 1.06 |
+| $5m | | | 0.83 | 1.02 |
+| $25m | | | 0.93 | 0.95 |
+| Real prices 2023–26 (no rounding) | 0.96 | 0.93 | 1.68 (3.37 with signal) | 1.72 |
+
 ## tastytrade under $100k ([`results/TASTY.md`](results/TASTY.md), [`results/TASTY_MES.md`](results/TASTY_MES.md))
 
 **Why the original doesn't fit.** Naked XSP calls under tastytrade's house margin (25%/15%) need about 95% of NAV (113% at the 95th percentile), because MES hedges held in the separate futures account don't offset them.

@@ -240,39 +240,47 @@ Fees cost about 0.4% of NAV a year.
   - Futures hedges get no margin offset.
   - It charges a carrying cost on margin (3.5% a year on Classic).
 
-## Summary by broker and size ([`results/SUMMARY.md`](results/SUMMARY.md), `run_summary.py`)
+## Summary by broker and size ([`results/SUMMARY.md`](results/SUMMARY.md), [`results/TASTY_HYBRID.md`](results/TASTY_HYBRID.md), [`results/IBKR_HYBRID.md`](results/IBKR_HYBRID.md))
 
-Calmar ratio, 2011–2026, median of 3 rounding seeds, broker-specific fees:
+Calmar ratio, 2011–2026, median of 3 rounding seeds, broker-specific fees. Retail programmes use the hybrid hedge: whole MES lots, plus SPY shares for the leftover fraction (a US 500 CFD for EU clients at IBKR). MES-only results are in brackets.
 
-| Account | IBKR (XSP + MES) | tastytrade (Micro E-mini + MES) | GS 2.5% budget | GS 5% budget |
+| Account | IBKR (XSP + MES + top-up) | tastytrade (Micro E-mini + MES + SPY top-up) | GS 2.5% budget | GS 5% budget |
 |---|---|---|---|---|
-| $25k | 0.31 | 0.29 | | |
-| $50k | 0.56 | 0.40 | | |
-| $100k | 0.67 | 0.71 | | |
-| $250k | 0.92 | 0.86 | | |
+| $25k | 0.58 (0.31) | 0.90 (0.29) | | |
+| $50k | 0.70 (0.56) | 0.78 (0.40) | | |
+| $75k | | 0.86 (0.48) | | |
+| $100k | 0.80 (0.67) | 0.80 (0.71) | | |
+| $250k | 0.95 (0.92) | 0.87 (0.86) | | |
 | $1m | 0.87 | | 0.72 | 0.92 |
 | $2m | | | 0.90 | 1.06 |
 | $5m | | | 0.83 | 1.02 |
 | $25m | | | 0.93 | 0.95 |
 | Real prices 2023–26 (no rounding) | 0.96 | 0.93 | 1.68 (3.37 with signal) | 1.72 |
 
-## tastytrade under $100k ([`results/TASTY.md`](results/TASTY.md), [`results/TASTY_MES.md`](results/TASTY_MES.md))
+## tastytrade under $100k ([`results/TASTY.md`](results/TASTY.md), [`results/TASTY_MES.md`](results/TASTY_MES.md), [`results/TASTY_HYBRID.md`](results/TASTY_HYBRID.md))
 
-**Why the original doesn't fit.** Naked XSP calls under tastytrade's house margin (25%/15%) need about 95% of NAV (113% at the 95th percentile), because MES hedges held in the separate futures account don't offset them.
+**Why the original doesn't fit.** Naked XSP calls under tastytrade's house margin (25%/15%) need about 95% of NAV, because MES hedges in the separate futures account don't offset them.
 
-**Use Micro E-mini S&P options instead.** Sell the same 20–30 delta calls about 10 days out in Micro E-mini options: the new cash-settled European weeklies launched June 2026, $5 × index. Hedge with MES in the same futures account.
-- **Margin:** the calls and the hedge are margined together (SPAN), about 10–15% of NAV.
-- **Trading costs:** with costs 1.5× the fitted quote model, Sharpe is about 1.2 at $50–75k and 0.8 at $25k (max drawdown −23%).
-- **If costs are 2× (early quotes):** Sharpe 0.65–0.9.
-- **Minimum account:** about $50k.
+**The version that works has two parts:**
+1. **Options.** Sell the same 20–30 delta calls about 10 days out in Micro E-mini S&P options: cash-settled European weeklies since June 2026, $5 × index. They are margined together with MES in the futures account (SPAN).
+2. **Hedge.** Use whole MES lots, plus SPY shares for the leftover fraction of a lot. The SPY position averages $0–19k.
 
-**Hedge with SPY shares instead of MES.** Finer steps give Sharpe 1.2–1.4 even at $25–75k. But SPY sits in the securities account at 50% margin, with no netting: about 60% of NAV typical and up to 140% in stressed periods. So run it at a lower budget or keep a cash buffer.
+**Results (Calmar, 5% budget):**
 
-**Rejected.** Call spreads (XSP or Micro): buying the far wing gives back the edge, leaving Sharpe 0.3–0.7.
+| Account | $25k | $50k | $75k | $100k | $250k |
+|---|---|---|---|---|---|
+| Calmar | 0.90 | 0.78 | 0.86 | 0.80 | 0.87 |
+
+- Margin at $25k: about 34% of NAV typical, 71% in stressed periods. At $100k: 16% typical, 28% stressed.
+- MES alone: 0.29 to 0.71 below $100k.
+- SPY alone: similar Calmar, but margin runs up to 135–146% of NAV.
+
+**Rejected.** Call spreads: buying the far wing gives back the edge.
 
 **Check first:**
-- that tastytrade nets cash-settled Micro options against MES
+- whether tastytrade nets cash-settled Micro options against MES
 - real spreads during regular trading hours
+- whether a Polish client can actually buy SPY at tastytrade
 
 ## Pricing model (v3)
 

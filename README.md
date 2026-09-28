@@ -207,6 +207,39 @@ either measure relative to its own 6-month median (about 0.65). In real 20–30 
 "cheap" tercile earned the most. The richness effect lives in the far wing, not in the strikes
 retail can trade cheaply.
 
+## Brokers and minimum account (`run_accounts.py`, [`results/ACCOUNTS.md`](results/ACCOUNTS.md))
+
+Whole contracts at today's sizes (XSP about $78k, SPXW about $776k, MES about $39k notional), 2011–2026, 5% volatility budget:
+
+| Retail (XSP + MES hedge) | $25k | $50k | $100k | $250k | $1m | fractional |
+|---|---|---|---|---|---|---|
+| Sharpe | 0.60 | 1.07 | 1.24 | 1.34 | 1.30 | 1.39 |
+| Max drawdown | −25% | −13% | −10% | −6% | −8% | −8% |
+
+| Institutional (SPXW + MES), 2.5% budget | $0.25m | $0.5m | $1m | $2m | $5m | fractional |
+|---|---|---|---|---|---|---|
+| Sharpe | 0.90 | 1.21 | 1.21 | 1.26 | 1.55 | 1.73 |
+
+Fees cost about 0.4% of NAV a year.
+
+**Margin (share of NAV):**
+- Retail: about 58% under the Cboe rules-based formula (15%/10%) and about 11% on a −8%/+6% risk-based scan.
+- Institutional: 78% (2.5% budget) or 157% (5% budget) rules-based, versus 21% or 43% risk-based.
+- The institutional programme therefore needs risk-based margin.
+
+**Broker fit (research on 28 Sep 2026):**
+- **IBKR** is the best fit:
+  - EU retail clients (IBKR Ireland) get risk-based margin by default.
+  - Naked calls need options Level 4 and $2k minimum equity.
+  - XSP costs about $0.75 per contract, MES about $0.61 per side, and the API is free.
+- **tastytrade** accepts Polish residents through its US entity:
+  - Its house margin on naked cash-settled index calls is 25%/15%, which is about 95% of NAV for retail at 5% volatility.
+  - So it needs portfolio margin ($125k) or a smaller budget.
+- **Saxo** is the weakest fit:
+  - Short index calls require individual assessment.
+  - Futures hedges get no margin offset.
+  - It charges a carrying cost on margin (3.5% a year on Classic).
+
 ## Pricing model (v3)
 
 | Component | Implementation |

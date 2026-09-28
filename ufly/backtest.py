@@ -75,6 +75,8 @@ class Config:
     hedge_mult: float = 5.0        # $ per index point per hedge contract (MES 5, ES 50, SPY share ~0.1)
     opt_fee_usd: float = 0.0       # commission + exchange fees per option contract
     hedge_fee_usd: float = 0.0     # commission + exchange fees per hedge contract
+    hedge_mult2: float = 0.0       # >0: whole hedge lots rounded toward zero, remainder in a finer instrument
+    hedge_fee2_usd: float = 0.0    # (e.g. MES lots topped up with SPY shares: hedge_mult2 0.1)
     fut_margin_pct: float = 0.07   # hedge margin as a fraction of hedge notional (MES ~0.07, SPY shares 0.5)
     naked_hi: float = 0.15         # naked index call margin: premium + max(hi x S - OTM, lo x S)
     naked_lo: float = 0.10         # (Cboe minimum 15%/10%; tastytrade house rule 25%/15%)
@@ -250,6 +252,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
     nav0 = 100.0
     cash = nav0
     h = 0.0                              # hedge, units of index (long > 0)
+    h2 = 0.0                             # part of h held in the finer top-up instrument (hedge_mult2)
     whole = cfg.account_usd > 0
     rng_slots = np.random.default_rng(cfg.seed + 1)
     acc_slots: dict = {}                 # fractional contracts carried per (dte, delta) slot, small-account mode
@@ -262,7 +265,8 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
 
     cols = ["nav", "spot", "prem_mid", "opt_cost", "payoff", "hedge_pnl", "hedge_cost",
             "liab", "short_notional", "net_delta_units", "n_sold", "n_skipped", "atm_2d", "atm_5d",
-            "regt_margin", "contracts_sold", "contracts_open", "hedge_contracts", "fees", "hedge_units"]
+            "regt_margin", "contracts_sold", "contracts_open", "hedge_contracts", "fees", "hedge_units",
+            "hedge_units2"]
     cols += [f"stress_{x:+.0%}" for x in cfg.stress]
     out = np.zeros((N, len(cols)))
     intraday_t, intraday_nav = [], []
@@ -411,9 +415,18 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
                 target = float(pos_delta.sum())
                 if whole:
                     hu = per_unit(S) / cfg.hedge_mult
-                    n_new, n_old = np.round(target * hu), np.round(h * hu)
-                    target = n_new / hu
-                    fee = abs(n_new - n_old) * cfg.hedge_fee_usd * nav0 / cfg.account_usd
+                    if cfg.hedge_mult2 > 0:
+                        hu2 = per_unit(S) / cfg.hedge_mult2
+                        n_new, n_old = np.trunc(target * hu), np.round((h - h2) * hu)
+                        m_new, m_old = np.round((target - n_new / hu) * hu2), np.round(h2 * hu2)
+                        h2 = m_new / hu2
+                        target = n_new / hu + h2
+                        fee = abs(m_new - m_old) * cfg.hedge_fee2_usd * nav0 / cfg.account_usd
+                    else:
+                        n_new, n_old = np.round(target * hu), np.round(h * hu)
+                        target = n_new / hu
+                        fee = 0.0
+                    fee += abs(n_new - n_old) * cfg.hedge_fee_usd * nav0 / cfg.account_usd
                     hcost_tot += fee
                     fee_tot += fee
                     cash -= fee
@@ -455,7 +468,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
         a5 = float(atm_for(sig_close[d], d, np.array([5 / 252]))[0])
         out[d] = [cash - liab, S, prem_mid, opt_cost, payoff_tot, hpnl_tot, hcost_tot, liab,
                   short_notional, h - (pos_delta.sum() if active.size else 0.0), n_sold, n_skip, a2, a5,
-                  regt, k_sold, k_open, abs(h) * pu_d / cfg.hedge_mult, fee_tot, h, *stress]
+                  regt, k_sold, k_open, abs(h - h2) * pu_d / cfg.hedge_mult, fee_tot, h, h2, *stress]
 
     daily = pd.DataFrame(out, index=dates, columns=cols)
     daily["ret"] = daily.nav.pct_change().fillna(daily.nav.iloc[0] / nav0 - 1)

@@ -262,7 +262,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
 
     cols = ["nav", "spot", "prem_mid", "opt_cost", "payoff", "hedge_pnl", "hedge_cost",
             "liab", "short_notional", "net_delta_units", "n_sold", "n_skipped", "atm_2d", "atm_5d",
-            "regt_margin", "contracts_sold", "contracts_open", "hedge_contracts", "fees"]
+            "regt_margin", "contracts_sold", "contracts_open", "hedge_contracts", "fees", "hedge_units"]
     cols += [f"stress_{x:+.0%}" for x in cfg.stress]
     out = np.zeros((N, len(cols)))
     intraday_t, intraday_nav = [], []
@@ -455,7 +455,7 @@ def run(cfg: Config, daily_mkt: pd.DataFrame, hourly_mkt: pd.DataFrame | None, m
         a5 = float(atm_for(sig_close[d], d, np.array([5 / 252]))[0])
         out[d] = [cash - liab, S, prem_mid, opt_cost, payoff_tot, hpnl_tot, hcost_tot, liab,
                   short_notional, h - (pos_delta.sum() if active.size else 0.0), n_sold, n_skip, a2, a5,
-                  regt, k_sold, k_open, abs(h) * pu_d / cfg.hedge_mult, fee_tot, *stress]
+                  regt, k_sold, k_open, abs(h) * pu_d / cfg.hedge_mult, fee_tot, h, *stress]
 
     daily = pd.DataFrame(out, index=dates, columns=cols)
     daily["ret"] = daily.nav.pct_change().fillna(daily.nav.iloc[0] / nav0 - 1)

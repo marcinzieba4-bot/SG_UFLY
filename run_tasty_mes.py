@@ -48,7 +48,7 @@ def job(args):
 def main():
     daily = run_tasty.load_market()[0]
     ref = float(daily.spx_close.loc[:END].dropna().iloc[-1])
-    base = Config(start=START, end=END, stress=STRESS, index_ref=ref, tc_model="mes", leverage=K_MES, **RETAIL)
+    base = replace(Config(start=START, end=END, stress=STRESS, index_ref=ref, leverage=K_MES, **RETAIL), tc_model="mes")
     mes = dict(opt_mult=5.0, opt_fee_usd=FEES["MES_OPT"])
     jobs = [("XSP costs (reference), fractional", replace(base, tc_model="xsp"), False)]
     for sc in (1.0, 1.5, 2.0):
